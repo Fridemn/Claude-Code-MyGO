@@ -1,0 +1,4 @@
+temp/
+.env
+.cache/
+.claude-code-go/
