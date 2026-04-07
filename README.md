@@ -1,6 +1,6 @@
 # Claude-Code-Go
 
-> **⚠️ Disclaimer**: This project is for learning and research purposes only. It does not represent the official internal development repository structure.
+> **⚠️ 免责声明**：本项目仅供学习和研究目的使用。它不代表官方内部开发仓库结构。
 
 [English Version](README_EN.md) | 中文版
 
