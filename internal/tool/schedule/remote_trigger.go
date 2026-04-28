@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // RemoteTriggerToolName is the name of the remote trigger tool

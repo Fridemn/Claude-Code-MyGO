@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // NotebookEditToolName is the name of the notebook edit tool

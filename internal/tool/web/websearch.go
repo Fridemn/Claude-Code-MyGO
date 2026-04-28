@@ -2,7 +2,7 @@ package web
 
 
 import (
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 	"context"
 	"fmt"
 	"io"
@@ -172,7 +172,7 @@ func (t *WebSearchTool) performSearch(ctx context.Context, query string, allowed
 		return nil, err
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Claude-Code-Go/1.0)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Claude-Go/1.0)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 

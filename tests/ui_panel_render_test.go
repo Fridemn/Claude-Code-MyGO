@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/bootstrap"
-	"claude-code-go/internal/components"
-	"claude-code-go/internal/config"
+	"claude-go/internal/bootstrap"
+	"claude-go/internal/components"
+	"claude-go/internal/config"
 )
 
 func TestChatAppRender_PanelEntryContainsSectionsAndActions(t *testing.T) {
@@ -17,7 +17,7 @@ func TestChatAppRender_PanelEntryContainsSectionsAndActions(t *testing.T) {
 	props := components.ChatProps{
 		Version: "test-version",
 		Config: config.Config{
-			AppName: "Claude-Code-Go",
+			AppName: "Claude-Go",
 			Model:   "test-model",
 			BaseURL: "https://example.com/v1/chat/completions",
 		},
@@ -78,8 +78,8 @@ func TestChatAppRender_TranscriptShowsHeaderSummaryAndScrollHint(t *testing.T) {
 	t.Parallel()
 
 	app := components.ChatAppFor()
-	entries := make([]components.TranscriptEntry, 0, 18)
-	for i := 0; i < 18; i++ {
+	entries := make([]components.TranscriptEntry, 0, 22)
+	for i := 0; i < 22; i++ {
 		kind := "assistant"
 		if i%2 == 0 {
 			kind = "user"
@@ -94,24 +94,24 @@ func TestChatAppRender_TranscriptShowsHeaderSummaryAndScrollHint(t *testing.T) {
 	screen := app.Render(components.ChatProps{
 		Version: "test-version",
 		Config: config.Config{
-			AppName: "Claude-Code-Go",
+			AppName: "Claude-Go",
 			Model:   "test-model",
 			BaseURL: "https://example.com/v1/chat/completions",
 		},
 		State: bootstrap.State{
 			SessionID: "session-1",
-			TurnCount: 18,
+			TurnCount: 22,
 		},
 		Height:           24,
 		Entries:          entries,
-		TranscriptScroll: 12,
+		TranscriptScroll: 1,
 	})
 
 	for _, want := range []string{
 		"session session-1",
-		"turn 18",
+		"turn 22",
 		"example.com/v1/ch", // URL is truncated in display
-		"PgUp/PgDn scroll",
+		"Wheel/PgUp/PgDn/↑/↓ scroll",
 		"lines above",
 	} {
 		if !strings.Contains(screen, want) {
@@ -134,7 +134,7 @@ func TestChatAppRender_TranscriptScrollFromBottom_WithSingleLargeBlock(t *testin
 		return app.Render(components.ChatProps{
 			Version: "test-version",
 			Config: config.Config{
-				AppName: "Claude-Code-Go",
+				AppName: "Claude-Go",
 				Model:   "test-model",
 				BaseURL: "https://example.com/v1/chat/completions",
 			},
@@ -155,7 +155,7 @@ func TestChatAppRender_TranscriptScrollFromBottom_WithSingleLargeBlock(t *testin
 	}
 
 	bottom := render(0)
-	up := render(20)
+	up := render(60)
 
 	if strings.Contains(bottom, "line 01") {
 		t.Fatalf("expected bottom render not to include earliest line before scrolling up, got:\n%s", bottom)

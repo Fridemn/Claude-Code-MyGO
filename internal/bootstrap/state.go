@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"claude-code-go/internal/config"
+	"claude-go/internal/config"
 )
 
 type State struct {
@@ -33,6 +33,12 @@ type State struct {
 	InMemoryErrorLog    []InMemoryError `json:"in_memory_error_log,omitempty"`
 	LastError           string          `json:"last_error,omitempty"`
 	Todos               map[string][]TodoItem `json:"todos,omitempty"`
+	// EditorMode controls keyboard mode ("normal" or "vim")
+	EditorMode          string          `json:"editor_mode,omitempty"`
+	// AgentColor is the color assigned to this agent session
+	AgentColor          string          `json:"agent_color,omitempty"`
+	// AdditionalDirectories are extra working directories for Claude.md context
+	AdditionalDirectories []string      `json:"additional_directories,omitempty"`
 }
 
 type InMemoryError struct {
@@ -289,4 +295,100 @@ func (s *Store) GetSessionID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.state.SessionID
+}
+
+// SetEditorMode sets the editor mode (normal or vim)
+func (s *Store) SetEditorMode(mode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.EditorMode = mode
+	s.state.LastInteractionTime = time.Now()
+}
+
+// GetEditorMode returns the current editor mode
+func (s *Store) GetEditorMode() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.EditorMode
+}
+
+// SetAgentColor sets the agent color
+func (s *Store) SetAgentColor(color string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.AgentColor = color
+	s.state.LastInteractionTime = time.Now()
+}
+
+// GetAgentColor returns the current agent color
+func (s *Store) GetAgentColor() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.AgentColor
+}
+
+// GetAdditionalDirectories returns the additional working directories
+func (s *Store) GetAdditionalDirectories() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.state.AdditionalDirectories == nil {
+		return nil
+	}
+	return append([]string(nil), s.state.AdditionalDirectories...)
+}
+
+// SetAdditionalDirectories sets the additional working directories
+func (s *Store) SetAdditionalDirectories(dirs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.AdditionalDirectories = append([]string(nil), dirs...)
+	s.state.LastInteractionTime = time.Now()
+}
+
+// AddAdditionalDirectory adds a new working directory
+func (s *Store) AddAdditionalDirectory(dir string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Check if already exists
+	for _, existing := range s.state.AdditionalDirectories {
+		if existing == dir {
+			return false
+		}
+	}
+	s.state.AdditionalDirectories = append(s.state.AdditionalDirectories, dir)
+	s.state.LastInteractionTime = time.Now()
+	return true
+}
+
+// RemoveAdditionalDirectory removes a working directory
+func (s *Store) RemoveAdditionalDirectory(dir string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, existing := range s.state.AdditionalDirectories {
+		if existing == dir {
+			s.state.AdditionalDirectories = append(
+				s.state.AdditionalDirectories[:i],
+				s.state.AdditionalDirectories[i+1:]...,
+			)
+			s.state.LastInteractionTime = time.Now()
+			return true
+		}
+	}
+	return false
+}
+
+// SetMainLoopModel sets the main loop model
+// TS src/state/AppState.ts: mainLoopModel state field
+func (s *Store) SetMainLoopModel(model string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.MainLoopModel = model
+	s.state.LastInteractionTime = time.Now()
+}
+
+// GetMainLoopModel returns the main loop model
+func (s *Store) GetMainLoopModel() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.MainLoopModel
 }

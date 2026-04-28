@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"claude-code-go/internal/session"
-	"claude-code-go/internal/types"
+	"claude-go/internal/session"
+	"claude-go/internal/types"
 )
 
 func TestSessionManagerSaveLoadAndCreateWithID(t *testing.T) {

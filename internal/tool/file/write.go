@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // FileWriteTool implements the Write tool from TypeScript

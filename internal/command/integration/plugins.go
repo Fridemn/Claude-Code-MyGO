@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 func registerPluginsCommands(r *command.Registry) {
@@ -141,6 +141,7 @@ func registerPluginsCommands(r *command.Registry) {
 		Type:        command.KindLocalJSX,
 		Name:        "plugins",
 		Description: "show plugin subsystem status",
+		Load:        loadPluginsModel,
 		Handler: func(_ context.Context, runtime command.Runtime, _ []string) (string, error) {
 			return renderPluginsOverview(runtime), nil
 		},

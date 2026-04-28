@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 func registerHooksCommands(r *command.Registry) {
@@ -14,6 +14,7 @@ func registerHooksCommands(r *command.Registry) {
 		Type:        command.KindLocalJSX,
 		Name:        "hooks",
 		Description: "show current hook system status",
+		Load:        loadHooksModel,
 		Handler: func(_ context.Context, runtime command.Runtime, _ []string) (string, error) {
 			return renderHooksOverview(runtime), nil
 		},

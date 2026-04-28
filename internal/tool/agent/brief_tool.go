@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // Brief tool constants

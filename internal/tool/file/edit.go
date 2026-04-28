@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // FileEditTool implements the Edit tool from TypeScript

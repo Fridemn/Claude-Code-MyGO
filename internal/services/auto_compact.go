@@ -170,15 +170,47 @@ func AutoCompactIfNeeded(
 
 // RunPostCompactCleanup runs cleanup after compaction.
 // Ported from src/services/compact/postCompactCleanup.ts:runPostCompactCleanup
+//
+// Call this after both auto-compact and manual /compact to free memory
+// held by tracking structures that are invalidated by compaction.
 func RunPostCompactCleanup(querySource string) {
 	// Reset microcompact state
 	ResetMicrocompactState()
 
-	// Clear classifier approvals, speculative checks, etc.
-	// In full implementation, this would clear various caches
+	// Clear main-thread specific caches only for main thread compacts
+	// Subagents (agent:*) run in the same process and share module-level state
+	if IsMainThreadSource(querySource) {
+		// Clear user context cache
+		// Clear memory files cache
+		// In full implementation, this would call:
+		// - getUserContext.cache.clear()
+		// - resetGetMemoryFilesCache('compact')
+	}
+
+	// Clear system prompt sections (for all sources)
+	// clearSystemPromptSections()
+
+	// Clear classifier approvals
+	// clearClassifierApprovals()
+
+	// Clear speculative checks
+	// clearSpeculativeChecks()
+
+	// Clear beta tracing state
+	// clearBetaTracingState()
+
+	// Clear session messages cache
+	// clearSessionMessagesCache()
+
+	// Note: Intentionally NOT resetting sentSkillNames - re-injecting the full
+	// skill_listing (~4K tokens) post-compact is pure cache_creation. The model
+	// still has SkillTool in schema, invoked_skills preserves used skills.
 }
 
 // ResetMicrocompactState resets the microcompact state.
 func ResetMicrocompactState() {
-	// In full implementation, this would reset cached MC state
+	// In full implementation, this would reset cached MC state including:
+	// - Time since last MC
+	// - Accumulated token savings
+	// - Any other MC tracking variables
 }

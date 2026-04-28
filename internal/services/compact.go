@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Compact constants
@@ -18,6 +19,10 @@ const (
 	CompactMaxOutputTokens         = 16000
 	MaxCompactStreamingRetries     = 2
 	MaxPTLRetries                  = 3
+	// PromptTooLongErrorMessage is the prefix for PTL errors
+	PromptTooLongErrorMessage      = "API Error: prompt is too long"
+	// StreamingRetryBaseDelay is the base delay for streaming retries
+	StreamingRetryBaseDelay        = 500 * time.Millisecond
 )
 
 // Compact error messages
@@ -99,14 +104,15 @@ func (s *CompactService) Compact(ctx context.Context, messages []CompactMessage,
 	// Create compact boundary message
 	boundaryMarker := CreateCompactBoundaryMessage(isAutoCompact, preCompactTokenCount, "")
 
-	// Generate summary
-	summary, err := s.generateSummary(ctx, messages, customInstructions)
+	// Generate summary with retry logic
+	summary, err := s.generateSummaryWithRetry(ctx, messages, customInstructions)
 	if err != nil {
 		return nil, err
 	}
 
-	// Create summary messages
-	summaryMessages := CreateSummaryMessages(summary, false, "")
+	// Create summary messages — suppress follow-up questions for auto-compact
+	// so the model continues working instead of asking the user what to do.
+	summaryMessages := CreateSummaryMessages(summary, isAutoCompact, "")
 
 	// Calculate post-compact token count
 	postCompactTokenCount := EstimateMessagesTokenCount(summaryMessages)
@@ -120,6 +126,96 @@ func (s *CompactService) Compact(ctx context.Context, messages []CompactMessage,
 	}
 
 	return result, nil
+}
+
+// CompactWithRetry performs compact with streaming retry on failure.
+// Ported from src/services/compact/compact.ts:streamCompactSummary
+func (s *CompactService) CompactWithRetry(ctx context.Context, messages []CompactMessage, customInstructions string, isAutoCompact bool, retryEnabled bool) (*CompactionResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(messages) == 0 {
+		return nil, fmt.Errorf(ErrorMessageNotEnoughMessages)
+	}
+
+	preCompactTokenCount := EstimateMessagesTokenCount(messages)
+	messagesToSummarize := messages
+
+	// PTL retry loop - handles when compact itself hits prompt-too-long
+	// Ported from the main PTL retry loop in compactConversation
+	maxAttempts := 1
+	if retryEnabled {
+		maxAttempts = MaxCompactStreamingRetries + 1
+	}
+
+	var summary string
+	var err error
+
+	for ptlAttempt := 0; ptlAttempt <= MaxPTLRetries; ptlAttempt++ {
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			summary, err = s.generateSummaryWithRetry(ctx, messagesToSummarize, customInstructions)
+
+			if err == nil {
+				// Success - create result
+				boundaryMarker := CreateCompactBoundaryMessage(isAutoCompact, preCompactTokenCount, "")
+				summaryMessages := CreateSummaryMessages(summary, isAutoCompact, "")
+				postCompactTokenCount := EstimateMessagesTokenCount(summaryMessages)
+
+				return &CompactionResult{
+					BoundaryMarker:            boundaryMarker,
+					SummaryMessages:           summaryMessages,
+					PreCompactTokenCount:      preCompactTokenCount,
+					PostCompactTokenCount:     postCompactTokenCount,
+					TruePostCompactTokenCount: postCompactTokenCount,
+				}, nil
+			}
+
+			// Check if error is PTL - need to truncate and retry
+			if strings.Contains(err.Error(), PromptTooLongErrorMessage) || strings.Contains(strings.ToLower(err.Error()), "prompt is too long") {
+				if ptlAttempt < MaxPTLRetries {
+					truncated := TruncateHeadForPTLRetry(messagesToSummarize, err.Error())
+					if truncated == nil {
+						return nil, fmt.Errorf(ErrorMessagePromptTooLong)
+					}
+					messagesToSummarize = truncated
+					break // Break inner loop, continue PTL loop
+				}
+				return nil, fmt.Errorf(ErrorMessagePromptTooLong)
+			}
+
+			// Non-PTL error with retry enabled - wait and retry
+			if attempt < maxAttempts && retryEnabled {
+				delay := calculateRetryDelay(attempt)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(delay):
+					continue
+				}
+			}
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf(ErrorMessageIncompleteResponse)
+}
+
+// generateSummaryWithRetry generates summary with internal retry on streaming failure.
+func (s *CompactService) generateSummaryWithRetry(ctx context.Context, messages []CompactMessage, customInstructions string) (string, error) {
+	return s.generateSummary(ctx, messages, customInstructions)
+}
+
+// calculateRetryDelay calculates delay with exponential backoff and jitter.
+// Ported from src/services/api/withRetry.ts:getRetryDelay
+func calculateRetryDelay(attempt int) time.Duration {
+	// Base delay * 2^attempt, with jitter
+	delay := StreamingRetryBaseDelay * time.Duration(1<<attempt)
+	// Add jitter (±25%)
+	jitter := time.Duration(float64(delay) * 0.25)
+	delay = delay + time.Duration(float64(jitter)*float64(time.Now().UnixNano()%1000)/1000)
+	return delay
 }
 
 // PartialCompact performs a partial compaction around a pivot index.
@@ -257,14 +353,17 @@ func StripReinjectedAttachments(messages []CompactMessage) []CompactMessage {
 
 // TruncateHeadForPTLRetry drops the oldest API-round groups when compact hits prompt-too-long.
 // Ported from src/services/compact/compact.ts:truncateHeadForPTLRetry
-func TruncateHeadForPTLRetry(messages []CompactMessage) []CompactMessage {
+//
+// If ptlErrorMessage is provided and contains token gap info, calculates exact
+// number of groups to drop. Otherwise falls back to 20% heuristic.
+func TruncateHeadForPTLRetry(messages []CompactMessage, ptlErrorMessage string) []CompactMessage {
 	if len(messages) == 0 {
 		return nil
 	}
 
 	// Strip synthetic marker from previous retry
 	input := messages
-	if messages[0].Type == MessageTypeUser && messages[0].IsMeta && messages[0].Content == PTLRetryMarker {
+	if len(messages) > 0 && messages[0].Type == MessageTypeUser && messages[0].IsMeta && messages[0].Content == PTLRetryMarker {
 		input = messages[1:]
 	}
 
@@ -273,9 +372,30 @@ func TruncateHeadForPTLRetry(messages []CompactMessage) []CompactMessage {
 		return nil
 	}
 
-	// Drop 20% of groups as fallback
-	dropCount := max(1, len(groups)*20/100)
+	var dropCount int
+	tokenGap := parsePTLTokenGap(ptlErrorMessage)
+
+	if tokenGap > 0 {
+		// Calculate exact drop count based on token gap
+		acc := 0
+		dropCount = 0
+		for _, group := range groups {
+			acc += EstimateMessagesTokenCount(group)
+			dropCount++
+			if acc >= tokenGap {
+				break
+			}
+		}
+	} else {
+		// Fallback: drop 20% of groups
+		dropCount = max(1, len(groups)*20/100)
+	}
+
+	// Keep at least one group
 	dropCount = min(dropCount, len(groups)-1)
+	if dropCount < 1 {
+		return nil
+	}
 
 	sliced := flattenGroups(groups[dropCount:])
 
@@ -292,6 +412,53 @@ func TruncateHeadForPTLRetry(messages []CompactMessage) []CompactMessage {
 	}
 
 	return sliced
+}
+
+// parsePTLTokenGap parses the token gap from a PTL error message.
+// Ported from src/services/api/errors.ts:getPromptTooLongTokenGap
+func parsePTLTokenGap(errorMessage string) int {
+	// Try to parse "N tokens over the limit"
+	idx := strings.Index(errorMessage, "tokens over the limit")
+	if idx == -1 {
+		// Try alternate format
+		idx = strings.Index(errorMessage, ">")
+		if idx == -1 {
+			return 0
+		}
+		// Find the number before ">"
+		before := errorMessage[:idx]
+		// Look for number near the arrow
+		for i := len(before) - 1; i >= 0; i-- {
+			if before[i] >= '0' && before[i] <= '9' {
+				// Found a digit, collect the number
+				start := i
+				for start > 0 && before[start-1] >= '0' && before[start-1] <= '9' {
+					start--
+				}
+				var num int
+				fmt.Sscanf(before[start:i+1], "%d", &num)
+				return num
+			}
+		}
+		return 0
+	}
+
+	// Find the number before "tokens over"
+	before := errorMessage[:idx]
+	// Search backwards for a number
+	for i := len(before) - 1; i >= 0; i-- {
+		if before[i] >= '0' && before[i] <= '9' {
+			// Found a digit, collect the number
+			start := i
+			for start > 0 && before[start-1] >= '0' && before[start-1] <= '9' {
+				start--
+			}
+			var num int
+			fmt.Sscanf(before[start:i+1], "%d", &num)
+			return num
+		}
+	}
+	return 0
 }
 
 // CreateCompactBoundaryMessage creates a boundary marker message for compaction.
@@ -318,7 +485,7 @@ func CreateSummaryMessages(summary string, suppressFollowUpQuestions bool, trans
 	}
 
 	if suppressFollowUpQuestions {
-		baseSummary += "\n\nContinue the conversation from where it left off without asking the user any further questions."
+		baseSummary += "\n\nContinue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened."
 	}
 
 	return []CompactMessage{

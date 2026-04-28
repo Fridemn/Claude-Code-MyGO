@@ -3,13 +3,14 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/constants"
+	"claude-go/internal/config"
+	"claude-go/internal/constants"
 )
 
 // OpenAICompatibleClient implements an OpenAI-compatible API client
@@ -35,9 +36,9 @@ func CreateOpenAICompatibleClientWithHTTPClient(cfg config.Config, client *http.
 		client = &http.Client{Timeout: constants.DefaultRequestTimeoutSeconds * time.Second}
 	}
 	return &OpenAICompatibleClient{
-		baseURL:    strings.TrimRight(cfg.BaseURL, "/"),
-		apiKey:     cfg.APIKey,
-		model:      cfg.Model,
+		baseURL:    cleanEndpointURL(cfg.BaseURL),
+		apiKey:     config.CleanConfigValue(cfg.APIKey),
+		model:      config.CleanConfigValue(cfg.Model),
 		client:     client,
 		maxRetries: DefaultMaxRetries,
 		retryDelay: DefaultBaseDelay,
@@ -91,9 +92,9 @@ type ToolDefinition struct {
 
 // FunctionDefinition represents a function definition
 type FunctionDefinition struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
 }
 
 // ToolCall represents a tool call in a message
@@ -173,6 +174,23 @@ func (c *OpenAICompatibleClient) SetModel(model string) {
 	c.model = model
 }
 
+// SetBaseURL sets the API endpoint URL.
+func (c *OpenAICompatibleClient) SetBaseURL(baseURL string) {
+	c.baseURL = cleanEndpointURL(baseURL)
+}
+
+// SetAPIKey sets the API key used for authorization.
+func (c *OpenAICompatibleClient) SetAPIKey(apiKey string) {
+	c.apiKey = config.CleanConfigValue(apiKey)
+}
+
+// Configure updates the client from a config without replacing the HTTP client.
+func (c *OpenAICompatibleClient) Configure(cfg config.Config) {
+	c.SetBaseURL(cfg.BaseURL)
+	c.SetAPIKey(cfg.APIKey)
+	c.SetModel(cfg.Model)
+}
+
 // SetTimeout sets the HTTP client timeout
 func (c *OpenAICompatibleClient) SetTimeout(timeout time.Duration) {
 	if c.client != nil {
@@ -216,7 +234,9 @@ func BuildTools(tools []any) []ToolDefinition {
 				td := ToolDefinition{Type: "function"}
 				td.Function.Name, _ = fn["name"].(string)
 				td.Function.Description, _ = fn["description"].(string)
-				td.Function.Parameters, _ = fn["parameters"].(map[string]any)
+				if params, ok := fn["parameters"].(map[string]any); ok {
+					td.Function.Parameters, _ = json.Marshal(params)
+				}
 				result = append(result, td)
 			}
 		}
@@ -246,4 +266,8 @@ func hasPrefix(s, prefix string) bool {
 
 func trimPrefix(s, prefix string) string {
 	return strings.TrimPrefix(s, prefix)
+}
+
+func cleanEndpointURL(raw string) string {
+	return strings.TrimRight(config.CleanConfigValue(raw), "/")
 }

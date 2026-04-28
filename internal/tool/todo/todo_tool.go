@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"claude-code-go/internal/bootstrap"
-	"claude-code-go/internal/tool"
+	"claude-go/internal/bootstrap"
+	"claude-go/internal/tool"
 )
 
 // TodoWriteTool implements the TodoWrite tool for managing session task lists

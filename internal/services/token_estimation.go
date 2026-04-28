@@ -40,7 +40,8 @@ func RoughTokenCountEstimation(content string) int {
 	if len(content) == 0 {
 		return 0
 	}
-	return int(float64(len(content)/DefaultBytesPerToken) * TokenEstimationPadding)
+	// Multiply first to avoid truncation, then apply padding
+	return int(float64(len(content)) / DefaultBytesPerToken * TokenEstimationPadding)
 }
 
 // RoughTokenCountEstimationForFileType provides a more accurate estimate when file type is known.
@@ -50,7 +51,8 @@ func RoughTokenCountEstimationForFileType(content string, fileExtension string) 
 		return 0
 	}
 	bytesPerToken := BytesPerTokenForFileType(fileExtension)
-	return int(float64(len(content)/bytesPerToken) * TokenEstimationPadding)
+	// Multiply first to avoid truncation, then apply padding
+	return int(float64(len(content)) / float64(bytesPerToken) * TokenEstimationPadding)
 }
 
 // ContentBlock represents a content block for token estimation.

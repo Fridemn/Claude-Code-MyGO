@@ -6,13 +6,17 @@ import (
 	"io"
 	"os"
 
-	"claude-code-go/internal/agent"
-	"claude-code-go/internal/bootstrap"
-	"claude-code-go/internal/command"
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/constants"
-	"claude-code-go/internal/engine"
-	"claude-code-go/internal/services"
+	"claude-go/internal/agent"
+	"claude-go/internal/api"
+	"claude-go/internal/bootstrap"
+	"claude-go/internal/command"
+	"claude-go/internal/config"
+	"claude-go/internal/constants"
+	"claude-go/internal/engine"
+	"claude-go/internal/services"
+	"claude-go/internal/settings"
+
+	bashperm "claude-go/internal/tool/bash"
 )
 
 type App struct {
@@ -22,7 +26,7 @@ type App struct {
 	input    io.Reader
 }
 
-func Create(ctx context.Context) (*App, error) {
+func Create(ctx context.Context, sessionID string) (*App, error) {
 	cfg, err := config.Load(".env")
 	if err != nil {
 		return nil, err
@@ -33,10 +37,14 @@ func Create(ctx context.Context) (*App, error) {
 		return nil, err
 	}
 
-	container, err := services.Create(ctx, cfg, state)
+	container, err := services.Create(ctx, cfg, state, sessionID)
 	if err != nil {
 		return nil, err
 	}
+
+	// Initialize settings directory and load persisted permission rules
+	settings.InitSettingsDirectory("")
+	bashperm.LoadPersistedPermissionRules()
 
 	return &App{
 		cfg:      cfg,
@@ -52,7 +60,16 @@ func (a *App) Commands() *command.Registry { return a.services.Commands() }
 
 func (a *App) Agents() *agent.Manager { return a.services.Agents() }
 
+func (a *App) Provider() *api.OpenAICompatibleClient { return a.services.Provider() }
+
 func (a *App) Config() config.Config { return a.cfg }
+
+func (a *App) ApplyConfig(cfg config.Config) {
+	a.cfg = cfg
+	if a.services != nil {
+		a.services.ApplyConfig(cfg)
+	}
+}
 
 func (a *App) State() *bootstrap.Store { return a.state }
 

@@ -2,13 +2,15 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path"
 	"strings"
 	"time"
 
-	"claude-code-go/internal/engine"
+	"claude-go/internal/engine"
+	"claude-go/internal/types"
 )
 
 type Hook struct {
@@ -37,10 +39,16 @@ type HooksService struct {
 	lastLoadedAt  time.Time
 	lastLoadError string
 	lastEvent     engine.HookExecution
+	settingsMgr   *HooksSettingsManager
 }
 
 func CreateHooksService(path string) *HooksService {
-	service := &HooksService{enabled: true, status: "not_yet_ported", path: path}
+	service := &HooksService{
+		enabled:     true,
+		status:      "not_yet_ported",
+		path:        path,
+		settingsMgr: NewHooksSettingsManager(path),
+	}
 	service.load(path)
 	return service
 }
@@ -139,6 +147,11 @@ func (s *HooksService) Reset() string {
 	return fmt.Sprintf("hook registry reset\nregistered=%d", len(s.hooks))
 }
 
+// IsEnabled returns whether hooks are enabled.
+func (s *HooksService) IsEnabled() bool {
+	return s.enabled
+}
+
 func (s *HooksService) Trigger(ctx context.Context, event engine.HookEvent) ([]engine.HookExecution, error) {
 	if !s.enabled {
 		return nil, nil
@@ -229,8 +242,36 @@ func (s *HooksService) load(path string) {
 		}
 		s.hooks = append([]Hook(nil), payload.Hooks...)
 	}
+
+	// Also load from settings manager if available
+	if s.settingsMgr != nil {
+		if err := s.settingsMgr.Load(); err == nil {
+			s.loadFromSettings()
+		}
+	}
+
 	if len(s.hooks) == 0 {
 		s.hooks = defaultHooks()
+	}
+}
+
+// loadFromSettings loads hooks from the settings manager.
+func (s *HooksService) loadFromSettings() {
+	if s.settingsMgr == nil {
+		return
+	}
+
+	allHooks := s.settingsMgr.GetAllHooks()
+	for eventName, matchers := range allHooks {
+		for _, matcher := range matchers {
+			hook := ConvertToHook(matcher, 0)
+			hook.Event = eventName
+			s.hooks = append(s.hooks, hook)
+		}
+	}
+
+	if len(allHooks) > 0 {
+		s.status = "loaded_from_settings"
 	}
 }
 
@@ -332,6 +373,64 @@ func (s *HooksService) Status() string {
 	return strings.Join(lines, "\n")
 }
 
+// GetMatchingHooks returns hooks that match the given event and query.
+func (s *HooksService) GetMatchingHooks(eventName, matchQuery string) []Hook {
+	var matched []Hook
+	for _, hook := range s.hooks {
+		if !hook.Enabled {
+			continue
+		}
+		if hook.Event != eventName {
+			continue
+		}
+		if !hookMatches(hook, matchQuery) {
+			continue
+		}
+		matched = append(matched, hook)
+	}
+	return matched
+}
+
+// UpdateHookStats updates the runtime statistics for a hook.
+func (s *HooksService) UpdateHookStats(event string, result interface{}) {
+	for i := range s.hooks {
+		if s.hooks[i].Event != event {
+			continue
+		}
+		s.hooks[i].RunCount++
+		s.hooks[i].LastRunAt = time.Now().Format(time.RFC3339)
+
+		// Type assertion for HookResult
+		if hr, ok := result.(types.HookResult); ok {
+			s.hooks[i].LastResult = "ok"
+			if hr.Error != "" {
+				s.hooks[i].LastResult = "error"
+				s.hooks[i].LastError = hr.Error
+			}
+			if hr.Output != "" {
+				s.hooks[i].LastOutput = hr.Output
+			}
+		}
+		break
+	}
+	s.persist()
+}
+
+// HasHookForEvent checks if there are any hooks for the given event.
+func (s *HooksService) HasHookForEvent(eventName string) bool {
+	for _, hook := range s.hooks {
+		if hook.Enabled && hook.Event == eventName {
+			return true
+		}
+	}
+	return false
+}
+
+// CreateExecutor creates a HookExecutor for this service.
+func (s *HooksService) CreateExecutor(cwd, sessionID, transcriptPath string) *HookExecutor {
+	return NewHookExecutor(s, cwd, sessionID, transcriptPath)
+}
+
 func hookMatches(hook Hook, target string) bool {
 	matcher := strings.TrimSpace(hook.Matcher)
 	if matcher == "" || matcher == "*" {
@@ -355,7 +454,9 @@ func (s *HooksService) executeHook(ctx context.Context, hook *Hook, event engine
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	start := time.Now()
 	output, err := runHookCommand(runCtx, *hook, event)
+	durationMs := int(time.Since(start).Milliseconds())
 	now := time.Now().Format(time.RFC3339)
 	hook.RunCount++
 	hook.LastRunAt = now
@@ -364,14 +465,16 @@ func (s *HooksService) executeHook(ctx context.Context, hook *Hook, event engine
 	hook.LastResult = "ok"
 
 	report := engine.HookExecution{
-		Event:     event.Name,
-		Target:    event.Target,
-		Hook:      hook.Event,
-		Blocking:  hook.Blocking,
-		Result:    "ok",
-		Output:    strings.TrimSpace(output),
-		Timestamp: now,
-		Payload:   event.Payload,
+		Event:      event.Name,
+		Target:     event.Target,
+		Hook:       hook.Event,
+		Command:    strings.TrimSpace(hook.Command),
+		Blocking:   hook.Blocking,
+		Result:     "ok",
+		Output:     strings.TrimSpace(output),
+		DurationMs: durationMs,
+		Timestamp:  now,
+		Payload:    event.Payload,
 	}
 	if err != nil {
 		hook.LastResult = "error"
@@ -379,6 +482,19 @@ func (s *HooksService) executeHook(ctx context.Context, hook *Hook, event engine
 		report.Result = "error"
 		report.Error = err.Error()
 	}
+
+	// Parse JSON output to check for preventContinuation (matching TS version)
+	// TS: if (syncJson.continue === false) { result.preventContinuation = true }
+	if trimmedOutput := strings.TrimSpace(output); trimmedOutput != "" {
+		var syncJson types.SyncHookOutput
+		if parseErr := json.Unmarshal([]byte(trimmedOutput), &syncJson); parseErr == nil {
+			if syncJson.Continue == false {
+				report.PreventContinuation = true
+				report.StopReason = strings.TrimSpace(syncJson.StopReason)
+			}
+		}
+	}
+
 	s.lastLoadedAt = time.Now()
 	s.lastLoadError = ""
 	s.persist()
@@ -396,8 +512,8 @@ func runHookCommand(ctx context.Context, hook Hook, event engine.HookEvent) (str
 	}
 	cmd := exec.CommandContext(ctx, shell, "-lc", command)
 	cmd.Env = append(cmd.Environ(),
-		"CLAUDE_CODE_HOOK_EVENT="+event.Name,
-		"CLAUDE_CODE_HOOK_TARGET="+event.Target,
+		buildHookEnvVar("CLAUDE_CODE_HOOK_EVENT", event.Name),
+		buildHookEnvVar("CLAUDE_CODE_HOOK_TARGET", event.Target),
 	)
 	data, err := cmd.CombinedOutput()
 	return string(data), err

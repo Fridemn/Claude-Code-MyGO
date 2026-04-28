@@ -5,6 +5,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ type LSPServerManager struct {
 	extensionMap  map[string][]string // extension -> server names
 	openedFiles   map[string]string   // file URI -> server name
 	serverConfigs map[string]ScopedLspServerConfig
+	diagnostics   *LSPDiagnosticRegistry
 }
 
 // CreateLSPServerManager creates a new LSP server manager.
@@ -30,7 +32,13 @@ func CreateLSPServerManager() *LSPServerManager {
 		extensionMap:  make(map[string][]string),
 		openedFiles:   make(map[string]string),
 		serverConfigs: make(map[string]ScopedLspServerConfig),
+		diagnostics:   NewLSPDiagnosticRegistry(),
 	}
+}
+
+// Diagnostics returns the diagnostic registry.
+func (m *LSPServerManager) Diagnostics() *LSPDiagnosticRegistry {
+	return m.diagnostics
 }
 
 // Initialize initializes the manager with server configurations.
@@ -81,6 +89,12 @@ func (m *LSPServerManager) Initialize(ctx context.Context, configs map[string]Sc
 				}
 			}
 			return []interface{}{nil}, nil
+		})
+
+		// Register publishDiagnostics handler
+		// Ported from src/services/lsp/passiveFeedback.ts
+		instance.OnNotification("textDocument/publishDiagnostics", func(params interface{}) {
+			m.handlePublishDiagnostics(serverName, params)
 		})
 	}
 
@@ -343,4 +357,241 @@ func (m *LSPServerManager) IsFileOpen(filePath string) bool {
 	absPath, _ := filepath.Abs(filePath)
 	fileUri := "file://" + absPath
 	return m.openedFiles[fileUri] != ""
+}
+
+// handlePublishDiagnostics handles publishDiagnostics notifications from LSP servers.
+// Ported from src/services/lsp/passiveFeedback.ts
+func (m *LSPServerManager) handlePublishDiagnostics(serverName string, params interface{}) {
+	// Parse the notification params
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return
+	}
+
+	var publishParams PublishDiagnosticsParams
+	if err := json.Unmarshal(paramsJSON, &publishParams); err != nil {
+		return
+	}
+
+	// Convert to diagnostic files format
+	files := formatDiagnosticsForAttachment(publishParams)
+
+	// Register in the diagnostic registry
+	if len(files) > 0 {
+		m.diagnostics.RegisterPendingLSPDiagnostic(serverName, files)
+	}
+}
+
+// PublishDiagnosticsParams represents LSP publishDiagnostics notification params.
+// Ported from src/services/lsp/passiveFeedback.ts
+type PublishDiagnosticsParams struct {
+	Uri         string        `json:"uri"`
+	Diagnostics []LSPDiagnostic `json:"diagnostics"`
+	Version     int           `json:"version,omitempty"`
+}
+
+// LSPDiagnostic represents a single LSP diagnostic.
+type LSPDiagnostic struct {
+	Range     LSPRange      `json:"range"`
+	Severity  int           `json:"severity,omitempty"`
+	Code      interface{}   `json:"code,omitempty"`
+	Source    string        `json:"source,omitempty"`
+	Message   string        `json:"message"`
+	Tags      []int         `json:"tags,omitempty"`
+	Related   []RelatedInfo `json:"relatedInformation,omitempty"`
+}
+
+// LSPRange represents an LSP range.
+type LSPRange struct {
+	Start LSPPosition `json:"start"`
+	End   LSPPosition `json:"end"`
+}
+
+// LSPPosition represents an LSP position.
+type LSPPosition struct {
+	Line      int `json:"line"`
+	Character int `json:"character"`
+}
+
+// RelatedInfo represents related diagnostic information.
+type RelatedInfo struct {
+	Location LSPLocation `json:"location"`
+	Message  string      `json:"message"`
+}
+
+// LSPLocation represents an LSP location.
+type LSPLocation struct {
+	Uri   string    `json:"uri"`
+	Range LSPRange  `json:"range"`
+}
+
+// formatDiagnosticsForAttachment converts LSP diagnostics to DiagnosticFile format.
+// Ported from src/services/lsp/passiveFeedback.ts:formatDiagnosticsForAttachment
+func formatDiagnosticsForAttachment(params PublishDiagnosticsParams) []DiagnosticFile {
+	if len(params.Diagnostics) == 0 {
+		return nil
+	}
+
+	// Convert diagnostics
+	diagnostics := make([]Diagnostic, 0, len(params.Diagnostics))
+	for _, lspDiag := range params.Diagnostics {
+		diag := Diagnostic{
+			Message:  lspDiag.Message,
+			Severity: mapLSPSeverity(lspDiag.Severity),
+			Range:    lspDiag.Range,
+			Source:   lspDiag.Source,
+			Code:     lspDiag.Code,
+		}
+		diagnostics = append(diagnostics, diag)
+	}
+
+	// Apply volume limiting
+	diagnostics = limitDiagnostics(diagnostics)
+
+	if len(diagnostics) == 0 {
+		return nil
+	}
+
+	return []DiagnosticFile{
+		{
+			Uri:         params.Uri,
+			Diagnostics: diagnostics,
+		},
+	}
+}
+
+// mapLSPSeverity maps LSP severity numbers to string names.
+// Ported from src/services/lsp/passiveFeedback.ts:mapLSPSeverity
+func mapLSPSeverity(severity int) string {
+	switch severity {
+	case 1:
+		return "Error"
+	case 2:
+		return "Warning"
+	case 3:
+		return "Info"
+	case 4:
+		return "Hint"
+	default:
+		return "Error"
+	}
+}
+
+// limitDiagnostics applies volume limits to diagnostics.
+func limitDiagnostics(diagnostics []Diagnostic) []Diagnostic {
+	if len(diagnostics) <= MaxDiagnosticsPerFile {
+		return diagnostics
+	}
+
+	// Sort by severity (errors first)
+	sorted := make([]Diagnostic, len(diagnostics))
+	copy(sorted, diagnostics)
+
+	// Simple sort by severity (Error=1 < Warning=2 < Info=3 < Hint=4)
+	for i := 0; i < len(sorted)-1; i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if severityToNumber(sorted[i].Severity) > severityToNumber(sorted[j].Severity) {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+
+	return sorted[:MaxDiagnosticsPerFile]
+}
+
+// CheckForLSPDiagnostics retrieves pending LSP diagnostics.
+// Ported from src/services/lsp/LSPDiagnosticRegistry.ts:checkForLSPDiagnostics
+func (m *LSPServerManager) CheckForLSPDiagnostics() []DiagnosticFile {
+	result := m.diagnostics.CheckForLSPDiagnostics()
+	if len(result) == 0 {
+		return nil
+	}
+
+	// Flatten all files from all servers
+	var allFiles []DiagnosticFile
+	for _, r := range result {
+		allFiles = append(allFiles, r.Files...)
+	}
+
+	return allFiles
+}
+
+// ClearDeliveredDiagnosticsForFile clears diagnostics for a file after edit.
+// Ported from src/services/lsp/LSPDiagnosticRegistry.ts:clearDeliveredDiagnosticsForFile
+func (m *LSPServerManager) ClearDeliveredDiagnosticsForFile(fileUri string) {
+	m.diagnostics.ClearDeliveredDiagnosticsForFile(fileUri)
+}
+
+// ResetAllDiagnostics resets all diagnostic state on session clear.
+// Ported from src/services/lsp/LSPDiagnosticRegistry.ts:resetAllLSPDiagnosticState
+func (m *LSPServerManager) ResetAllDiagnostics() {
+	m.diagnostics.ResetAllLSPDiagnosticState()
+}
+
+// FormatDiagnosticAttachment formats diagnostics as an attachment.
+// Ported from src/utils/attachments.ts:getLSPDiagnosticAttachments
+func FormatDiagnosticAttachment(files []DiagnosticFile) string {
+	if len(files) == 0 {
+		return ""
+	}
+
+	var lines []string
+
+	// Summary line
+	totalDiags := 0
+	for _, f := range files {
+		totalDiags += len(f.Diagnostics)
+	}
+	lines = append(lines, fmt.Sprintf("Found %d new diagnostic issues in %d files:", totalDiags, len(files)))
+
+	// File details
+	for _, file := range files {
+		// Extract file path from URI
+		filePath := strings.TrimPrefix(file.Uri, "file://")
+		lines = append(lines, fmt.Sprintf("\n%s:", filePath))
+
+		for _, diag := range file.Diagnostics {
+			// Get line number if available
+			lineNum := 0
+			if rangeData, ok := diag.Range.(map[string]interface{}); ok {
+				if start, ok := rangeData["start"].(map[string]interface{}); ok {
+					if line, ok := start["line"].(float64); ok {
+						lineNum = int(line) + 1 // LSP lines are 0-based
+					}
+				}
+			}
+
+			// Format diagnostic
+			sevSymbol := getSeveritySymbol(diag.Severity)
+			msg := diag.Message
+			if len(msg) > 100 {
+				msg = msg[:100] + "..."
+			}
+
+			if lineNum > 0 {
+				lines = append(lines, fmt.Sprintf("  [%d] %s %s", lineNum, sevSymbol, msg))
+			} else {
+				lines = append(lines, fmt.Sprintf("  %s %s", sevSymbol, msg))
+			}
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// getSeveritySymbol returns a symbol for the severity level.
+// Ported from src/services/diagnosticTracking.ts:getSeveritySymbol
+func getSeveritySymbol(severity string) string {
+	switch severity {
+	case "Error":
+		return "✘"
+	case "Warning":
+		return "⚠"
+	case "Info":
+		return "ℹ"
+	case "Hint":
+		return "💡"
+	default:
+		return "✘"
+	}
 }

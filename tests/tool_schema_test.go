@@ -2,11 +2,12 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
-	bashtool "claude-code-go/internal/tool/bash"
-	"claude-code-go/internal/tool/file"
-	"claude-code-go/internal/tool"
+	bashtool "claude-go/internal/tool/bash"
+	"claude-go/internal/tool/file"
+	"claude-go/internal/tool"
 )
 
 func TestDefinitionsToTypes_UsesToolSchemasWhenAvailable(t *testing.T) {
@@ -22,12 +23,15 @@ func TestDefinitionsToTypes_UsesToolSchemasWhenAvailable(t *testing.T) {
 		t.Fatalf("expected 3 tool definitions, got %d", len(defs))
 	}
 
-	readFileSchema := defs[0].Parameters
-	required, ok := readFileSchema["required"].([]string)
+	var readFileSchema map[string]interface{}
+	if err := json.Unmarshal(defs[0].InputSchema, &readFileSchema); err != nil {
+		t.Fatalf("failed to unmarshal read_file schema: %v", err)
+	}
+	required, ok := readFileSchema["required"].([]interface{})
 	if !ok || len(required) == 0 || required[0] != "file_path" {
 		t.Fatalf("expected read_file schema to require path, got %#v", readFileSchema["required"])
 	}
-	properties, ok := readFileSchema["properties"].(map[string]any)
+	properties, ok := readFileSchema["properties"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected read_file schema properties, got %#v", readFileSchema["properties"])
 	}
@@ -35,8 +39,11 @@ func TestDefinitionsToTypes_UsesToolSchemasWhenAvailable(t *testing.T) {
 		t.Fatalf("expected read_file schema to expose offset")
 	}
 
-	bashSchema := defs[1].Parameters
-	bashProps, ok := bashSchema["properties"].(map[string]any)
+	var bashSchema map[string]interface{}
+	if err := json.Unmarshal(defs[1].InputSchema, &bashSchema); err != nil {
+		t.Fatalf("failed to unmarshal bash schema: %v", err)
+	}
+	bashProps, ok := bashSchema["properties"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected bash schema properties, got %#v", bashSchema["properties"])
 	}
@@ -44,7 +51,10 @@ func TestDefinitionsToTypes_UsesToolSchemasWhenAvailable(t *testing.T) {
 		t.Fatalf("expected Bash schema to expose run_in_background")
 	}
 
-	fallbackSchema := defs[2].Parameters
+	var fallbackSchema map[string]interface{}
+	if err := json.Unmarshal(defs[2].InputSchema, &fallbackSchema); err != nil {
+		t.Fatalf("failed to unmarshal fallback schema: %v", err)
+	}
 	if fallbackSchema["additionalProperties"] != true {
 		t.Fatalf("expected fallback schema to allow additional properties, got %#v", fallbackSchema)
 	}

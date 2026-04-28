@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // ToolSearchToolName is the name of the tool search tool

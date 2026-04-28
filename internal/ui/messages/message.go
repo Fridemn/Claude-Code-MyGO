@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-code-go/internal/ui/components"
+	"claude-go/internal/ui/components"
 )
 
 // MessageType represents the type of message
@@ -160,6 +160,10 @@ func RenderAssistantMessage(msg Message, width int) string {
 // RenderSystemMessage renders a system message
 // Matches src/components/messages/SystemTextMessage.tsx
 func RenderSystemMessage(msg Message, width int) string {
+	// Check for compact boundary - render as special compact boundary message
+	if strings.Contains(msg.Content, "[compact boundary") {
+		return RenderCompactBoundary(width)
+	}
 	// System messages are dimmed
 	return renderDim(msg.Content)
 }
@@ -328,6 +332,13 @@ func RenderCompactSummary(msg Message, width int) string {
 	hint := renderMuted(" (Ctrl+O to expand)")
 
 	return indicator + " " + title + hint
+}
+
+// RenderCompactBoundary renders a compact boundary message
+// Matches src/components/messages/CompactBoundaryMessage.tsx
+// Shows "✻ Conversation compacted (Ctrl+O for history)"
+func RenderCompactBoundary(width int) string {
+	return renderDim("✻ Conversation compacted (Ctrl+O for history)")
 }
 
 // Helper functions

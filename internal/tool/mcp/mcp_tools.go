@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // MCPTool is a stub tool for dynamic MCP tool invocation.

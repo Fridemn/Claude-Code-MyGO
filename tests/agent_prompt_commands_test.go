@@ -5,15 +5,15 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/agent"
-	"claude-code-go/internal/command"
-	cmdagent "claude-code-go/internal/command/agent"
-	cmdmeta "claude-code-go/internal/command/meta"
-	cmdprompt "claude-code-go/internal/command/prompt"
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/engine"
-	"claude-code-go/internal/session"
-	"claude-code-go/internal/tool"
+	"claude-go/internal/agent"
+	"claude-go/internal/command"
+	cmdagent "claude-go/internal/command/agent"
+	cmdmeta "claude-go/internal/command/meta"
+	cmdprompt "claude-go/internal/command/prompt"
+	"claude-go/internal/config"
+	"claude-go/internal/engine"
+	"claude-go/internal/session"
+	"claude-go/internal/tool"
 )
 
 func TestPromptCommands(t *testing.T) {
@@ -22,6 +22,14 @@ func TestPromptCommands(t *testing.T) {
 	registry := command.EmptyRegistry()
 	cmdprompt.Register(registry)
 	cmdmeta.Register(registry)
+
+	reviewCmd, ok := registry.Lookup("/review")
+	if !ok {
+		t.Fatal("expected /review to be registered")
+	}
+	if reviewCmd.GetKind() != command.KindPrompt {
+		t.Fatalf("expected /review kind=%q, got %q", command.KindPrompt, reviewCmd.GetKind())
+	}
 
 	out, ok, err := registry.Execute(context.Background(), "/review src/module", command.Runtime{})
 	if err != nil || !ok {

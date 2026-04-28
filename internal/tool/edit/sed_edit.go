@@ -10,8 +10,8 @@ import (
 	"regexp"
 	"strings"
 
-	"claude-code-go/internal/tool/bash"
-	"claude-code-go/internal/utils"
+	"claude-go/internal/tool/bash"
+	"claude-go/internal/utils"
 )
 
 // SedEditInfo contains parsed sed edit command information

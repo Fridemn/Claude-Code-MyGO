@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claude-code-go/internal/ui/components"
+	"claude-go/internal/ui/components"
 )
 
 type QuickOpenAction struct {
@@ -124,7 +124,7 @@ func (s *QuickOpenState) listWorkspaceFiles() ([]string, error) {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if strings.HasPrefix(name, ".git") || name == "node_modules" || name == ".claude-code-go" {
+			if strings.HasPrefix(name, ".git") || name == "node_modules" || name == ".claude-go" {
 				return filepath.SkipDir
 			}
 			return nil

@@ -7,10 +7,10 @@ package tool
 // Example usage from main:
 //
 //	import (
-//	    "claude-code-go/internal/tool"
-//	    "claude-code-go/internal/tool/bash"
-//	    "claude-code-go/internal/tool/file"
-//	    "claude-code-go/internal/tool/agent"
+//	    "claude-go/internal/tool"
+//	    "claude-go/internal/tool/bash"
+//	    "claude-go/internal/tool/file"
+//	    "claude-go/internal/tool/agent"
 //	)
 //
 //	func main() {

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"claude-code-go/internal/command"
-	"claude-code-go/internal/task"
+	"claude-go/internal/command"
+	"claude-go/internal/task"
 )
 
 func formatTaskList(tasks []*task.AgentTask) string {

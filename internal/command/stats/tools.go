@@ -3,34 +3,34 @@ package stats
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
 
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 func registerTools(r *command.Registry) {
-	r.Register(command.LegacyCommand{
+	r.RegisterLegacy(command.LegacyCommand{
 		Type:        command.KindLocalJSX,
 		Name:        "tools",
 		Description: "list available tools",
+		Load:        loadToolsModel,
 		Handler: func(_ context.Context, runtime command.Runtime, _ []string) (string, error) {
-			if runtime.Tools == nil {
-				return "", fmt.Errorf("tool registry is not configured")
-			}
-			definitions := runtime.Tools.List()
-			lines := make([]string, 0, len(definitions))
-			for _, definition := range definitions {
-				mode := "write"
-				if definition.IsReadOnly(nil) {
-					mode = "read"
-				}
-				lines = append(lines, fmt.Sprintf("%s  [%s]  %s", definition.Name(), mode, definition.Description()))
-			}
-			sort.Strings(lines)
-			return strings.Join(lines, "\n"), nil
+			return joinLines(renderToolsLines(runtime)), nil
 		},
 	})
+}
+
+func joinLines(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	if len(lines) == 1 {
+		return lines[0]
+	}
+	out := lines[0]
+	for _, line := range lines[1:] {
+		out += "\n" + line
+	}
+	return out
 }
 
 func registerTool(r *command.Registry) {
@@ -55,17 +55,6 @@ func registerTool(r *command.Registry) {
 				mode = "read"
 			}
 			return fmt.Sprintf("name=%s\nmode=%s\ndescription=%s", definition.Name(), mode, definition.Description()), nil
-		},
-	})
-}
-
-func registerModel(r *command.Registry) {
-	r.Register(command.LegacyCommand{
-		Type:        command.KindLocal,
-		Name:        "model",
-		Description: "show current model settings",
-		Handler: func(_ context.Context, runtime command.Runtime, _ []string) (string, error) {
-			return fmt.Sprintf("model=%s\nbase_url=%s", runtime.Config.Model, runtime.Config.BaseURL), nil
 		},
 	})
 }

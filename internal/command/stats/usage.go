@@ -6,38 +6,44 @@ import (
 	"sort"
 	"strings"
 
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 func registerUsage(r *command.Registry) {
-	r.Register(command.LegacyCommand{
+	r.RegisterLegacy(command.LegacyCommand{
 		Type:        command.KindLocalJSX,
 		Name:        "usage",
 		Description: "show usage counters grouped by model",
+		Load:        loadUsageModel,
 		Handler: func(_ context.Context, runtime command.Runtime, _ []string) (string, error) {
-			if runtime.State == nil {
-				return "", fmt.Errorf("state store is not configured")
-			}
-			state := runtime.State.Snapshot()
-			lines := []string{
-				fmt.Sprintf("turns=%d", state.TurnCount),
-				fmt.Sprintf("tool_calls=%d", state.ToolCallCount),
-				fmt.Sprintf("api_duration=%s", state.TotalAPIDuration),
-			}
-			keys := make([]string, 0, len(state.ModelUsage))
-			for model := range state.ModelUsage {
-				keys = append(keys, model)
-			}
-			sort.Strings(keys)
-			if len(keys) > 0 {
-				lines = append(lines, "", "models:")
-				for _, model := range keys {
-					lines = append(lines, fmt.Sprintf("- %s: %d", model, state.ModelUsage[model]))
-				}
-			}
-			return strings.Join(lines, "\n"), nil
+			return strings.Join(usageLines(runtime), "\n"), nil
 		},
 	})
+}
+
+func usageLines(runtime command.Runtime) []string {
+	if runtime.State == nil {
+		return []string{"state store is not configured"}
+	}
+	state := runtime.State.Snapshot()
+	lines := []string{
+		"Usage",
+		fmt.Sprintf("turns=%d", state.TurnCount),
+		fmt.Sprintf("tool_calls=%d", state.ToolCallCount),
+		fmt.Sprintf("api_duration=%s", state.TotalAPIDuration),
+	}
+	keys := make([]string, 0, len(state.ModelUsage))
+	for model := range state.ModelUsage {
+		keys = append(keys, model)
+	}
+	sort.Strings(keys)
+	if len(keys) > 0 {
+		lines = append(lines, "", "models:")
+		for _, model := range keys {
+			lines = append(lines, fmt.Sprintf("- %s: %d", model, state.ModelUsage[model]))
+		}
+	}
+	return lines
 }
 
 func registerStats(r *command.Registry) {

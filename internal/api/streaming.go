@@ -234,8 +234,8 @@ func DefaultNonStreamingFallbackConfig() NonStreamingFallbackConfig {
 
 // StreamingResult holds the result of a streaming request with fallback support
 type StreamingResult struct {
-	Response     *ChatCompletionResponse
-	UsedFallback bool
+	Response      *ChatCompletionResponse
+	UsedFallback  bool
 	FallbackError error
 }
 
@@ -246,46 +246,44 @@ func (c *OpenAICompatibleClient) CompleteStreamWithWatchdog(
 	onChunk func(chunk *StreamChunk) error,
 	fallbackConfig NonStreamingFallbackConfig,
 ) (*StreamingResult, error) {
-	// Create a cancellable context for the watchdog
-	streamCtx, cancelFunc := context.WithCancel(ctx)
-	defer cancelFunc()
-
-	// Set up watchdog
 	watchdogConfig := DefaultStreamWatchdogConfig()
-	watchdog := CreateStreamWatchdog(watchdogConfig, cancelFunc)
-
-	// Set up callbacks
-	watchdog.SetWarningCallback(func(d time.Duration) {
-		// Log warning (could be integrated with logging system)
-		// Matches TS: logForDebugging('Streaming idle warning...')
-	})
-
-	watchdog.SetTimeoutCallback(func(d time.Duration) {
-		// Log timeout (could be integrated with logging system)
-		// Matches TS: logForDebugging('Streaming idle timeout...')
-	})
-
-	// Start watchdog
-	watchdog.Start()
-
-	// Attempt streaming
-	resp, streamErr := c.tryCompleteStreamWithWatchdog(streamCtx, req, onChunk, watchdog)
-
-	// Stop watchdog after stream completes
-	watchdog.Stop()
-
-	// Check if watchdog aborted the stream
-	if watchdog.WasAborted() {
-		streamErr = &StreamIdleTimeoutError{Timeout: watchdogConfig.IdleTimeout}
+	cfg := StreamingRetryConfig()
+	cfg.MaxRetries = c.maxRetries
+	if c.retryDelay > 0 {
+		cfg.BaseDelay = c.retryDelay
 	}
+
+	resp, streamErr := RetryWithCallback(ctx, cfg, func() (*ChatCompletionResponse, error) {
+		// Create a fresh cancellable context/watchdog for each retry attempt.
+		streamCtx, cancelFunc := context.WithCancel(ctx)
+		defer cancelFunc()
+
+		watchdog := CreateStreamWatchdog(watchdogConfig, cancelFunc)
+		watchdog.SetWarningCallback(func(d time.Duration) {
+			// Log warning (could be integrated with logging system)
+			// Matches TS: logForDebugging('Streaming idle warning...')
+		})
+		watchdog.SetTimeoutCallback(func(d time.Duration) {
+			// Log timeout (could be integrated with logging system)
+			// Matches TS: logForDebugging('Streaming idle timeout...')
+		})
+		watchdog.Start()
+		defer watchdog.Stop()
+
+		resp, err := c.tryCompleteStreamWithWatchdog(streamCtx, req, onChunk, watchdog)
+		if watchdog.WasAborted() {
+			return nil, &StreamIdleTimeoutError{Timeout: watchdogConfig.IdleTimeout}
+		}
+		return resp, err
+	}, nil)
 
 	// Handle streaming errors with fallback
 	if streamErr != nil {
 		// Check if fallback is enabled
 		if !fallbackConfig.Enabled {
 			return &StreamingResult{
-				Response:     nil,
-				UsedFallback: false,
+				Response:      nil,
+				UsedFallback:  false,
 				FallbackError: streamErr,
 			}, streamErr
 		}
@@ -293,8 +291,8 @@ func (c *OpenAICompatibleClient) CompleteStreamWithWatchdog(
 		// Don't fallback for user aborts
 		if streamErr == context.Canceled {
 			return &StreamingResult{
-				Response:     nil,
-				UsedFallback: false,
+				Response:      nil,
+				UsedFallback:  false,
 				FallbackError: streamErr,
 			}, streamErr
 		}
@@ -303,15 +301,15 @@ func (c *OpenAICompatibleClient) CompleteStreamWithWatchdog(
 		fallbackResp, fallbackErr := c.doNonStreamingFallback(ctx, req, fallbackConfig)
 
 		return &StreamingResult{
-			Response:     fallbackResp,
-			UsedFallback: true,
+			Response:      fallbackResp,
+			UsedFallback:  true,
 			FallbackError: streamErr,
 		}, fallbackErr
 	}
 
 	return &StreamingResult{
-		Response:     resp,
-		UsedFallback: false,
+		Response:      resp,
+		UsedFallback:  false,
 		FallbackError: nil,
 	}, nil
 }
@@ -455,7 +453,10 @@ func (c *OpenAICompatibleClient) doNonStreamingFallback(
 
 	// Perform non-streaming request with retry
 	cfg := DefaultRetryConfig()
-	cfg.MaxRetries = 2 // Fewer retries for fallback
+	cfg.MaxRetries = c.maxRetries
+	if c.retryDelay > 0 {
+		cfg.BaseDelay = c.retryDelay
+	}
 
 	return RetryWithResult(timeoutCtx, cfg, func() (*ChatCompletionResponse, error) {
 		return c.executeRequest(timeoutCtx, mustMarshal(req))

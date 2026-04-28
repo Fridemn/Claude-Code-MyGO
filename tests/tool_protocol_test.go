@@ -1,12 +1,13 @@
 package tests
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/task"
-	"claude-code-go/internal/tool"
-	"claude-code-go/internal/types"
+	"claude-go/internal/task"
+	"claude-go/internal/tool"
+	"claude-go/internal/types"
 )
 
 func TestToolProtocolParseStripAndRender(t *testing.T) {
@@ -51,7 +52,7 @@ func TestToolProtocolParseNativeCalls(t *testing.T) {
 		{
 			ID:        "call_123",
 			Name:      "grep",
-			Arguments: `{"pattern":"TODO","path":"."}`,
+			Arguments: json.RawMessage(`{"pattern":"TODO","path":"."}`),
 		},
 	})
 	if err != nil {
@@ -112,6 +113,30 @@ func TestToolSystemPromptFragmentIncludesDynamicMCPHint(t *testing.T) {
 	} {
 		if !strings.Contains(fragment, want) {
 			t.Fatalf("missing tool preference guidance %q in fragment: %s", want, fragment)
+		}
+	}
+}
+
+func TestToolSystemPromptFragment_REPLModeSuppressesDirectPrimitiveGuidance(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_REPL", "")
+	t.Setenv("CLAUDE_REPL_MODE", "1")
+	t.Setenv("USER_TYPE", "")
+	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "")
+
+	registry := tool.EmptyRegistry()
+	registry.Register(testEchoTool{})
+	fragment := tool.SystemPromptFragment(registry.List())
+
+	if !strings.Contains(fragment, "REPL mode is enabled") {
+		t.Fatalf("expected repl-specific guidance, got: %s", fragment)
+	}
+	for _, forbidden := range []string{
+		"File search: use Glob or list_files",
+		"Read files: use Read",
+		"Useful tools for code tasks include list_files, Read, Write, Edit, Grep, Glob, Bash",
+	} {
+		if strings.Contains(fragment, forbidden) {
+			t.Fatalf("expected fragment to suppress non-repl primitive guidance %q, got: %s", forbidden, fragment)
 		}
 	}
 }

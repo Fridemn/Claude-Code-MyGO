@@ -1,7 +1,9 @@
 package services
 
 import (
-	"claude-code-go/internal/types"
+	"encoding/json"
+
+	"claude-go/internal/types"
 )
 
 // ConvertToCompactMessage converts types.Message to CompactMessage.
@@ -22,7 +24,7 @@ func ConvertToCompactMessage(msg types.Message) CompactMessage {
 			result.ToolCalls[i] = ToolCallContent{
 				ID:        tc.ID,
 				Name:      tc.Name,
-				Arguments: tc.Arguments,
+				Arguments: string(tc.Arguments),
 			}
 		}
 	}
@@ -52,12 +54,13 @@ func ConvertToCompactMessages(messages []types.Message) []CompactMessage {
 // ConvertFromCompactMessage converts CompactMessage back to types.Message.
 func ConvertFromCompactMessage(msg CompactMessage) types.Message {
 	result := types.Message{
-		UUID:      msg.UUID,
-		Type:      msg.Type,
-		Role:      msg.Role,
-		Content:   msg.Content,
-		Images:    msg.Images,
-		ToolCallID: msg.ToolUseID,
+		UUID:            msg.UUID,
+		Type:            msg.Type,
+		Role:            msg.Role,
+		Content:         msg.Content,
+		Images:          msg.Images,
+		ToolCallID:      msg.ToolUseID,
+		IsCompactSummary: msg.IsCompactSummary,
 	}
 
 	// Convert tool calls
@@ -67,7 +70,7 @@ func ConvertFromCompactMessage(msg CompactMessage) types.Message {
 			result.ToolCalls[i] = types.ToolCall{
 				ID:        tc.ID,
 				Name:      tc.Name,
-				Arguments: tc.Arguments,
+				Arguments: types.NormalizeObjectRawMessage(json.RawMessage(tc.Arguments)),
 			}
 		}
 	}

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-code-go/internal/types"
+	"claude-go/internal/types"
 )
 
 // SelectMemoriesSystemPrompt is the system prompt for memory selection.

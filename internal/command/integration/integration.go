@@ -1,7 +1,7 @@
 package integration
 
 import (
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 // registerIntegrationCommands registers all integration commands (MCP, Plugins, Hooks)

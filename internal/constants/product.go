@@ -1,6 +1,9 @@
 package constants
 
 const (
-	AppName = "Claude-Code-Go"
+	AppName = "Claude-Go"
+)
+
+var (
 	Version = "0.1.0-alpha"
 )

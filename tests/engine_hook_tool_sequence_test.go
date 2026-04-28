@@ -2,13 +2,14 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/engine"
-	"claude-code-go/internal/session"
-	"claude-code-go/internal/tool"
-	"claude-code-go/internal/types"
+	"claude-go/internal/config"
+	"claude-go/internal/engine"
+	"claude-go/internal/session"
+	"claude-go/internal/tool"
+	"claude-go/internal/types"
 )
 
 func TestEngineSubmit_NativeToolLoopDoesNotInsertHookSystemMessagesBetweenToolCallAndResult(t *testing.T) {
@@ -28,7 +29,7 @@ func TestEngineSubmit_NativeToolLoopDoesNotInsertHookSystemMessagesBetweenToolCa
 					{
 						ID:        "call_1",
 						Name:      "echo_tool",
-						Arguments: `{"value":"hello"}`,
+						Arguments: json.RawMessage(`{"value":"hello"}`),
 					},
 				},
 			},

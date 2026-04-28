@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"claude-code-go/internal/utils"
+	"claude-go/internal/utils"
 )
 
 func TestDetectFileEncoding(t *testing.T) {

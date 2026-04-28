@@ -1,7 +1,8 @@
 package bash
 
 import (
-	"claude-code-go/internal/tool"
+	"claude-go/internal/task"
+	"claude-go/internal/tool"
 
 	"bufio"
 	"bytes"
@@ -229,11 +230,16 @@ func (BashTool) Call(ctx context.Context, in tool.Input, runtime tool.Runtime) (
 		cwd = runtime.Store.GetCWD()
 	}
 
-	// Validate command for security issues
-	if securityErr := validateCommandSecurity(command); securityErr != nil {
+	// Validate command for security issues. Ask-level security checks are
+	// converted into an explicit permission prompt override, rather than a hard
+	// tool error, so users can approve from the interactive permission UI.
+	securityPrompt, securityErr := validateCommandSecurity(command)
+	if securityErr != nil {
+		errMsg := securityErr.Error()
 		return tool.Result{
+			Error: errMsg,
 			Content: BashOutput{
-				Stderr:      securityErr.Error(),
+				Stderr:      errMsg,
 				Interrupted: false,
 			},
 		}, nil
@@ -241,20 +247,24 @@ func (BashTool) Call(ctx context.Context, in tool.Input, runtime tool.Runtime) (
 
 	// Check for blocked sleep patterns
 	if blockedPattern := DetectBlockedSleepPattern(command); blockedPattern != "" {
+		errMsg := fmt.Sprintf("Blocked: %s. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), use the Monitor tool. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.", blockedPattern)
 		return tool.Result{
+			Error: errMsg,
 			Content: BashOutput{
-				Stderr:      fmt.Sprintf("Blocked: %s. Run blocking commands in the background with run_in_background: true — you'll get a completion notification when done. For streaming events (watching logs, polling APIs), use the Monitor tool. If you genuinely need a delay (rate limiting, deliberate pacing), keep it under 2 seconds.", blockedPattern),
+				Stderr:      errMsg,
 				Interrupted: false,
 			},
 		}, nil
 	}
 
 	// Check permissions using global permission checker
-	permResult := CheckGlobalPermission(command, description)
+	permResult := CheckGlobalPermissionWithPromptOverride(command, description, securityPrompt)
 	if !permResult.Allowed {
+		errMsg := fmt.Sprintf("permission denied: %s", permResult.Reason)
 		return tool.Result{
+			Error: errMsg,
 			Content: BashOutput{
-				Stderr:                    fmt.Sprintf("permission denied: %s", permResult.Reason),
+				Stderr:                    errMsg,
 				Interrupted:               false,
 				DangerouslyDisableSandbox: disableSandbox,
 			},
@@ -268,9 +278,11 @@ func (BashTool) Call(ctx context.Context, in tool.Input, runtime tool.Runtime) (
 	if !disableSandbox && IsSandboxingEnabled() {
 		sandboxResult := ExecuteSandboxed(ctx, command, cwd)
 		if !sandboxResult.Allowed {
+			errMsg := fmt.Sprintf("sandbox denied: %s", sandboxResult.Violation.Message)
 			return tool.Result{
+				Error: errMsg,
 				Content: BashOutput{
-					Stderr:                    fmt.Sprintf("sandbox denied: %s", sandboxResult.Violation.Message),
+					Stderr:                    errMsg,
 					Interrupted:               sandboxResult.Violation.Type == ViolationTimeout,
 					DangerouslyDisableSandbox: disableSandbox,
 				},
@@ -433,28 +445,64 @@ func executeSync(ctx context.Context, command, description, cwd string, timeout 
 }
 
 // executeBackground executes the command in the background
+// Ported from src/tasks/LocalShellTask/LocalShellTask.tsx:spawnShellTask
 func executeBackground(ctx context.Context, command, description, cwd string, runtime tool.Runtime) (tool.Result, error) {
-	// Create a background task
-	if runtime.Tasks == nil {
-		return tool.Result{}, fmt.Errorf("task store not available for background execution")
+	// Check if shell task store is available
+	if runtime.ShellTasks == nil {
+		return tool.Result{}, fmt.Errorf("shell task store not available for background execution")
 	}
 
-	// Generate task ID
-	taskID := generateTaskID()
+	// Create shell task
+	state, err := runtime.ShellTasks.CreateTask(command, description)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("failed to create background task: %w", err)
+	}
+	taskID := state.ID
 
 	// Start the command in a goroutine
 	go func() {
 		cmd := buildCommand(command, cwd, false)
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
+
+		// Create stdout/stderr writers that also write to task output
+		stdoutWriter := &taskOutputWriter{
+			taskID:      taskID,
+			taskManager: runtime.ShellTasks,
+		}
+		stderrWriter := &taskOutputWriter{
+			taskID:      taskID,
+			taskManager: runtime.ShellTasks,
+			isStderr:    true,
+		}
+
+		cmd.Stdout = stdoutWriter
+		cmd.Stderr = stderrWriter
 
 		err := cmd.Run()
 
-		// Store the result (this would need integration with the task system)
-		_ = err
-		_ = stdout.String()
-		_ = stderr.String()
+		// Determine status
+		var status task.ShellTaskStatus
+		var exitCode int
+		interrupted := false
+
+		if err != nil {
+			if cmd.ProcessState != nil {
+				exitCode = cmd.ProcessState.ExitCode()
+			}
+			if ctx.Err() == context.Canceled {
+				status = task.ShellTaskStatusInterrupted
+				interrupted = true
+			} else {
+				status = task.ShellTaskStatusFailed
+			}
+		} else {
+			status = task.ShellTaskStatusCompleted
+			if cmd.ProcessState != nil {
+				exitCode = cmd.ProcessState.ExitCode()
+			}
+		}
+
+		// Update task status and enqueue notification
+		runtime.ShellTasks.UpdateTaskStatus(taskID, status, exitCode, interrupted)
 	}()
 
 	return tool.Result{
@@ -465,6 +513,37 @@ func executeBackground(ctx context.Context, command, description, cwd string, ru
 			BackgroundTaskID: taskID,
 		},
 	}, nil
+}
+
+// taskOutputWriter is an io.Writer that writes to both buffer and task output
+type taskOutputWriter struct {
+	taskID      string
+	taskManager tool.ShellTaskStore
+	buf         []byte
+	isStderr    bool
+}
+
+func (w *taskOutputWriter) Write(p []byte) (n int, err error) {
+	// Append to buffer
+	w.buf = append(w.buf, p...)
+
+	// Write to task output file
+	if w.taskManager != nil {
+		// Prefix stderr lines with marker for distinction
+		var data []byte
+		if w.isStderr {
+			data = append([]byte("[stderr] "), p...)
+		} else {
+			data = p
+		}
+		w.taskManager.WriteOutput(w.taskID, data)
+	}
+
+	return len(p), nil
+}
+
+func (w *taskOutputWriter) String() string {
+	return string(w.buf)
 }
 
 // buildCommand creates an exec.Cmd for the given command
@@ -482,11 +561,12 @@ func buildCommand(command, cwd string, disableSandbox bool) *exec.Cmd {
 	return cmd
 }
 
-// validateCommandSecurity checks for potential security issues
-func validateCommandSecurity(command string) error {
+// validateCommandSecurity checks for potential security issues and returns an
+// optional interactive prompt override for ask-level findings.
+func validateCommandSecurity(command string) (*PermissionPromptOverride, error) {
 	// Check for empty command
 	if strings.TrimSpace(command) == "" {
-		return nil
+		return nil, nil
 	}
 
 	// Use the comprehensive security validator
@@ -494,17 +574,20 @@ func validateCommandSecurity(command string) error {
 
 	switch result.Level {
 	case SecurityLevelDeny:
-		return fmt.Errorf("command blocked: %s", result.Message)
+		return nil, fmt.Errorf("command blocked: %s", result.Message)
 	case SecurityLevelAsk:
-		// For now, just return a warning. In production, this would trigger
-		// a permission request to the user.
-		return fmt.Errorf("security warning: %s", result.Message)
+		// Ask-level checks require explicit user approval. The caller threads this
+		// override into the interactive permission flow.
+		return &PermissionPromptOverride{
+			Reason:      strings.TrimSpace(result.Message),
+			Suggestions: append([]string{}, result.Suggestions...),
+		}, nil
 	case SecurityLevelWarning:
 		// Log warning but allow execution
 		// In production, this would log to analytics
-		return nil
+		return nil, nil
 	default:
-		return nil
+		return nil, nil
 	}
 }
 
@@ -790,6 +873,7 @@ While the Bash tool can do similar things, it's better to use the built-in tools
 - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of ` + "`cd`" + `. You may use ` + "`cd`" + ` if the User explicitly requests it.
 - You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). By default, your command will timeout after 120000ms (2 minutes).
 - You can use the ` + "`run_in_background`" + ` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later.
+- If the tool returns ` + "`permission required:`" + `, ` + "`permission denied:`" + `, or ` + "`command blocked:`" + `, do not retry the same command. Ask the user for permission changes or choose a different approach.
 
 When issuing multiple commands:
 - If the commands are independent and can run in parallel, make multiple Bash tool calls in a single message.

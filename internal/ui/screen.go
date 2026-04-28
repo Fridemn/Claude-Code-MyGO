@@ -1,15 +1,21 @@
 package ui
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
-	"claude-code-go/internal/bootstrap"
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/ui/components"
+	"claude-go/internal/bootstrap"
+	"claude-go/internal/config"
+	"claude-go/internal/ui/components"
 )
 
 // RenderContext holds rendering state passed through the render tree
@@ -85,7 +91,9 @@ type TranscriptEntry struct {
 	UUID      string    // Unique identifier for matching/collapse logic
 	Timestamp time.Time // For metadata display in transcript mode
 	Subtype   string    // System message subtype: stop_hook_summary, task_status, etc.
+	Data      string    // Raw structured payload for system/attachment entries
 	ToolName  string    // For tool_use/tool_result entries
+	ToolInput string    // Raw JSON tool input for classification/collapse parity
 	ToolUseID string    // Links tool_result to tool_use
 	IsActive  bool      // For collapsed groups - indicates in-progress operations
 	Meta      EntryMeta // Collapsed counts, hook info, git ops
@@ -94,6 +102,7 @@ type TranscriptEntry struct {
 type SlashSuggestion struct {
 	Command     string
 	Description string
+	Details     []string
 }
 
 type ScreenState struct {
@@ -124,6 +133,8 @@ type ScreenState struct {
 	Teammates            []TeammateSpinnerNode
 	TeammateLeaderVerb   string
 	TeammateLeaderTokens int
+	PermissionMode       string
+	FooterRightHint      string
 	// InProgressToolIDs tracks tool_use IDs that are currently executing (no result yet)
 	InProgressToolIDs map[string]bool
 }
@@ -158,7 +169,29 @@ func RenderScreen(state ScreenState) string {
 
 	header := RenderHeader(width, state.Version, state.Config, state.State, state.SessionID, state.Turn)
 	transcript := RenderTranscriptWithContext(width, 0, state.Entries, state.TranscriptScroll, state.LastThinkingBlockID, ctx)
-	input := RenderInputPanel(width, state.State, state.CurrentInput, state.Suggestions, state.SelectedSuggestion, state.Busy, state.SpinnerTick, state.ToolName, state.StatusText, state.StartedAt, state.Verb, state.TokenCount, state.TranscriptScroll, state.Teammates, state.TeammateLeaderVerb, state.TeammateLeaderTokens)
+	input := RenderInputPanel(
+		width,
+		state.State,
+		state.CurrentInput,
+		len(state.CurrentInput),
+		-1,
+		-1,
+		state.Suggestions,
+		state.SelectedSuggestion,
+		state.Busy,
+		state.SpinnerTick,
+		state.ToolName,
+		state.StatusText,
+		state.StartedAt,
+		state.Verb,
+		state.TokenCount,
+		state.TranscriptScroll,
+		state.Teammates,
+		state.TeammateLeaderVerb,
+		state.TeammateLeaderTokens,
+		state.PermissionMode,
+		state.FooterRightHint,
+	)
 
 	parts := []string{
 		header,
@@ -242,22 +275,29 @@ func RenderHeader(width int, version string, cfg config.Config, state bootstrap.
 	return framedBoxWithTitle(width, title, body, dark.claude, dark.claude, dark.text, nil)
 }
 
-func RenderInputPanel(width int, state bootstrap.State, currentInput string, suggestions []SlashSuggestion, selectedSuggestion int, busy bool, spinnerTick int, toolName, statusText string, startedAt time.Time, verb string, tokenCount int, transcriptScroll int, teammates []TeammateSpinnerNode, teammateLeaderVerb string, teammateLeaderTokens int) string {
-	sprite := buddyDuckSprite()
-	spriteWidth := 0
-	for _, line := range sprite {
-		if w := visibleWidth(line); w > spriteWidth {
-			spriteWidth = w
-		}
-	}
-	leftWidth := width - spriteWidth - 3
-	if leftWidth < 32 {
-		leftWidth = width
-		sprite = nil
-		spriteWidth = 0
-	}
-
-	rule := style(&dark.inputLine, nil, strings.Repeat("─", leftWidth), false)
+func RenderInputPanel(
+	width int,
+	state bootstrap.State,
+	currentInput string,
+	cursorPos int,
+	selectionStart int,
+	selectionEnd int,
+	suggestions []SlashSuggestion,
+	selectedSuggestion int,
+	busy bool,
+	spinnerTick int,
+	toolName, statusText string,
+	startedAt time.Time,
+	verb string,
+	tokenCount int,
+	transcriptScroll int,
+	teammates []TeammateSpinnerNode,
+	teammateLeaderVerb string,
+	teammateLeaderTokens int,
+	permissionMode string,
+	footerRightHint string,
+) string {
+	rule := style(&dark.inputLine, nil, strings.Repeat("─", width), false)
 
 	// Show spinner if busy
 	var inputRows []string
@@ -276,19 +316,20 @@ func RenderInputPanel(width int, state bootstrap.State, currentInput string, sug
 
 		// Render spinner row with frame animation (120ms per frame)
 		// spinnerTick is in ms, frame = tick / 120
-		spinnerText := RenderSpinnerRow(spinnerTick, displayVerb, toolName, elapsedMs, tokenCount, leftWidth, SpinnerModeResponding, false)
+		spinnerText := RenderSpinnerRow(spinnerTick, displayVerb, toolName, elapsedMs, tokenCount, width, SpinnerModeResponding, false)
 
 		// Build status row
 		var statusParts []string
 		if strings.TrimSpace(statusText) != "" {
 			statusParts = append(statusParts, statusText)
 		}
-		statusParts = append(statusParts, "Ctrl+C to stop")
+		// Show /btw hint for side questions during busy state
+		statusParts = append(statusParts, "/btw for side question · Ctrl+C to stop")
 
 		statusRow := strings.Join(statusParts, " · ")
 		inputRows = []string{
 			spinnerText,
-			style(&dark.muted, nil, truncateVisible(statusRow, leftWidth), false),
+			style(&dark.muted, nil, truncateVisible(statusRow, width), false),
 		}
 		if len(teammates) > 0 {
 			nodes := make([]components.TeammateTask, 0, len(teammates))
@@ -303,7 +344,7 @@ func RenderInputPanel(width int, state bootstrap.State, currentInput string, sug
 				})
 			}
 			tree := components.RenderTeammateSpinnerTree(components.TeammateSpinnerTreeConfig{
-				Width:            leftWidth,
+				Width:            width,
 				SelectionMode:    false,
 				SelectedIndex:    -1,
 				LeaderVerb:       strings.TrimSpace(teammateLeaderVerb),
@@ -315,26 +356,25 @@ func RenderInputPanel(width int, state bootstrap.State, currentInput string, sug
 				inputRows = append(inputRows, line)
 			}
 		}
+		// Always show input field at bottom even when busy (for immediate commands like /btw)
+		// Show a dimmed input prompt to indicate user can type side commands
+		inputRows = append(inputRows, "")
+		inputRows = append(inputRows, style(&dark.muted, nil, "❯ "+currentInput, false))
 	} else {
-		inputRows = renderInputRows(leftWidth, currentInput)
+		inputRows = renderInputRows(width, currentInput, cursorPos, selectionStart, selectionEnd)
 	}
 
-	hint := style(&dark.muted, nil, "? for shortcuts", false)
-	if strings.TrimSpace(state.LastError) != "" {
-		hint = style(&dark.error, nil, truncateVisible("last error: "+state.LastError, leftWidth), false)
-	} else if transcriptScroll > 0 {
-		hint = style(&dark.info, nil, fmt.Sprintf("Wheel/PgUp/PgDn/↑/↓ scroll · Home/End jump · %d lines above", transcriptScroll), false)
-	}
+	hint, rightHint := renderFooterHints(width, state, busy, transcriptScroll, permissionMode, footerRightHint)
 
-	leftRows := []string{rule}
-	leftRows = append(leftRows, inputRows...)
-	leftRows = append(leftRows, rule)
+	rows := []string{rule}
+	rows = append(rows, inputRows...)
+	rows = append(rows, rule)
 	if len(suggestions) == 0 || busy {
-		leftRows = append(leftRows, padVisible(hint, leftWidth))
+		rows = append(rows, renderFooterLine(width, hint, rightHint))
 	} else {
 		for i, suggestion := range suggestions {
 			cmdWidth := visibleWidth(suggestion.Command)
-			descWidth := max(10, leftWidth-cmdWidth-2)
+			descWidth := max(10, width-cmdWidth-2)
 			prefix := "  "
 			cmdColor := &dark.permission
 			descColor := &dark.muted
@@ -347,55 +387,374 @@ func RenderInputPanel(width int, state bootstrap.State, currentInput string, sug
 				style(cmdColor, nil, suggestion.Command, true) +
 				"  " +
 				style(descColor, nil, truncateVisible(suggestion.Description, descWidth), false)
-			leftRows = append(leftRows, padVisible(row, leftWidth))
+			rows = append(rows, padVisible(row, width))
+			for _, detail := range suggestion.Details {
+				detail = strings.TrimSpace(detail)
+				if detail == "" {
+					continue
+				}
+				detailPrefix := "    "
+				if i == selectedSuggestion {
+					detailPrefix = "  " + style(&dark.permission, nil, "│ ", false)
+				}
+				rows = append(rows, padVisible(detailPrefix+style(&dark.muted, nil, truncateVisible(detail, max(10, width-visibleWidth(detailPrefix))), false), width))
+			}
 		}
 	}
-	leftRows = append(leftRows, strings.Repeat(" ", leftWidth))
-	if sprite == nil {
-		return strings.Join(leftRows, "\n")
-	}
-
-	totalRows := max(len(leftRows), len(sprite))
-	rows := make([]string, 0, totalRows)
-	leftOffset := max(0, totalRows-len(leftRows))
-	spriteOffset := max(0, totalRows-len(sprite))
-	for i := 0; i < totalRows; i++ {
-		left := strings.Repeat(" ", leftWidth)
-		if i >= leftOffset && i-leftOffset < len(leftRows) {
-			left = padVisible(leftRows[i-leftOffset], leftWidth)
-		}
-		right := ""
-		if i >= spriteOffset && i-spriteOffset < len(sprite) {
-			right = sprite[i-spriteOffset]
-		}
-		rows = append(rows, left+"   "+right)
-	}
+	rows = append(rows, strings.Repeat(" ", width))
 	return strings.Join(rows, "\n")
 }
 
-func renderInputRows(width int, currentInput string) []string {
+func renderInputRows(width int, currentInput string, cursorPos int, selectionStart int, selectionEnd int) []string {
 	prompt := style(&dark.text, nil, "❯", true) + " "
 	continuation := "  "
 	cursor := style(&dark.text, nil, "█", false)
 
+	// ANSI codes for selection highlighting
+	const (
+		reverseVideoOn  = "\x1b[7m"
+		reverseVideoOff = "\x1b[27m"
+	)
+
 	firstWidth := max(1, width-visibleWidth(prompt)-visibleWidth(cursor))
 	nextWidth := max(1, width-visibleWidth(continuation)-visibleWidth(cursor))
-	inputLines := wrapInputForDisplay(currentInput, firstWidth, nextWidth)
-	rows := make([]string, 0, len(inputLines))
-	for i, line := range inputLines {
+
+	// Track clamped selection boundaries for local use
+	hasSelection := selectionStart >= 0 && selectionEnd > selectionStart && selectionStart < len(currentInput)
+	selStart := selectionStart
+	selEnd := selectionEnd
+	if selEnd > len(currentInput) {
+		selEnd = len(currentInput)
+	}
+
+	// Single-pass wrapping with both selection highlighting and cursor tracking
+	type lineInfo struct {
+		text      string // rendered text (may contain ANSI codes)
+		cursorIdx int    // byte index in rendered text where cursor should be inserted, -1 if not this line
+	}
+
+	var lines []lineInfo
+	var current strings.Builder
+	currentWidth := 0
+	lineWidth := firstWidth
+	byteIdx := 0
+	cursorLine := -1
+	cursorCol := 0
+	inSelection := false
+
+	// Helper to flush current line
+	flushLine := func() {
+		lines = append(lines, lineInfo{text: current.String(), cursorIdx: -1})
+		current.Reset()
+		currentWidth = 0
+		lineWidth = nextWidth
+	}
+
+	for _, r := range inputRunes(currentInput) {
+		runeLen := utf8.RuneLen(r)
+
+		// Track cursor position (before the character)
+		if byteIdx == cursorPos {
+			cursorLine = len(lines)
+			cursorCol = current.Len()
+		}
+
+		// Check selection boundaries
+		if byteIdx == selStart && hasSelection && !inSelection {
+			current.WriteString(reverseVideoOn)
+			inSelection = true
+		}
+		if byteIdx == selEnd && hasSelection && inSelection {
+			current.WriteString(reverseVideoOff)
+			inSelection = false
+		}
+
+		if r == '\n' {
+			if inSelection {
+				current.WriteString(reverseVideoOff)
+			}
+			if cursorLine == len(lines) {
+				lines = append(lines, lineInfo{text: current.String(), cursorIdx: cursorCol})
+				cursorLine = len(lines) - 1
+			} else {
+				flushLine()
+			}
+			current.Reset()
+			currentWidth = 0
+			lineWidth = nextWidth
+			if inSelection {
+				current.WriteString(reverseVideoOn)
+			}
+			byteIdx += runeLen
+			continue
+		}
+		rw := runeCellWidth(r)
+		if rw == 0 {
+			current.WriteRune(r)
+			byteIdx += runeLen
+			continue
+		}
+		if currentWidth > 0 && currentWidth+rw > lineWidth {
+			if inSelection {
+				current.WriteString(reverseVideoOff)
+			}
+			if cursorLine == len(lines) {
+				lines = append(lines, lineInfo{text: current.String(), cursorIdx: cursorCol})
+				cursorLine = len(lines) - 1
+			} else {
+				flushLine()
+			}
+			current.Reset()
+			currentWidth = 0
+			lineWidth = nextWidth
+			if inSelection {
+				current.WriteString(reverseVideoOn)
+			}
+		}
+		current.WriteRune(r)
+		currentWidth += rw
+		byteIdx += runeLen
+	}
+
+	// Close selection at end if still open
+	if inSelection {
+		current.WriteString(reverseVideoOff)
+	}
+
+	// Handle cursor at end of input
+	if cursorPos >= len(currentInput) {
+		cursorLine = len(lines)
+		cursorCol = current.Len()
+	}
+
+	// Flush remaining
+	if current.Len() > 0 || len(lines) == 0 {
+		if cursorLine == len(lines) {
+			lines = append(lines, lineInfo{text: current.String(), cursorIdx: cursorCol})
+			cursorLine = len(lines) - 1
+		} else {
+			lines = append(lines, lineInfo{text: current.String(), cursorIdx: -1})
+		}
+	}
+
+	// Build final rows with prefix and cursor
+	// When there's a selection, skip cursor block to avoid ANSI reset canceling reverse video
+	showCursor := !hasSelection
+	cursorWidth := visibleWidth(cursor)
+	rows := make([]string, 0, len(lines))
+	for i, line := range lines {
 		prefix := continuation
-		lineWidth := nextWidth
+		lWidth := nextWidth
 		if i == 0 {
 			prefix = prompt
-			lineWidth = firstWidth
+			lWidth = firstWidth
 		}
-		rendered := prefix + line
-		if i == len(inputLines)-1 {
-			rendered += cursor
+		// Calculate padding width
+		padWidth := visibleWidth(prefix) + lWidth
+		if showCursor {
+			padWidth += cursorWidth
 		}
-		rows = append(rows, padVisible(rendered, visibleWidth(prefix)+lineWidth+visibleWidth(cursor)))
+		if showCursor && i == cursorLine && line.cursorIdx >= 0 {
+			ci := line.cursorIdx
+			text := line.text
+			if ci <= len(text) {
+				rendered := prefix + text[:ci] + cursor + text[ci:]
+				rows = append(rows, padVisible(rendered, padWidth))
+			} else {
+				rendered := prefix + text + cursor
+				rows = append(rows, padVisible(rendered, padWidth))
+			}
+		} else {
+			rendered := prefix + line.text
+			rows = append(rows, padVisible(rendered, padWidth))
+		}
 	}
 	return rows
+}
+
+// inputRunes returns the runes of a string for iteration
+func inputRunes(s string) []rune {
+	return []rune(s)
+}
+
+type footerSegment struct {
+	Text  string
+	Color *rgb
+	Bold  bool
+}
+
+func renderFooterHints(width int, state bootstrap.State, busy bool, transcriptScroll int, permissionMode, footerRightHint string) (string, string) {
+	if strings.TrimSpace(state.LastError) != "" {
+		return style(&dark.error, nil, truncateVisible("last error: "+state.LastError, width), false), ""
+	}
+	if transcriptScroll > 0 {
+		return style(&dark.info, nil, fmt.Sprintf("Wheel/PgUp/PgDn/↑/↓ scroll · Home/End jump · %d lines above", transcriptScroll), false), ""
+	}
+
+	var leftParts []footerSegment
+	if modePart := modeFooterSegment(permissionMode); modePart != nil {
+		leftParts = append(leftParts, *modePart)
+		leftParts = append(leftParts, footerSegment{
+			Text:  "(shift+tab to cycle)",
+			Color: &dark.muted,
+			Bold:  false,
+		})
+	}
+	if busy {
+		leftParts = append(leftParts, footerSegment{
+			Text:  "esc to interrupt",
+			Color: &dark.muted,
+			Bold:  false,
+		})
+	}
+	if len(leftParts) == 0 {
+		leftParts = append(leftParts, footerSegment{
+			Text:  "? for shortcuts",
+			Color: &dark.muted,
+			Bold:  false,
+		})
+	}
+
+	leftHint := styleFooterSegments(leftParts, width)
+	rightHint := ""
+	if strings.TrimSpace(footerRightHint) != "" {
+		rightHint = style(&dark.muted, nil, truncateVisible(footerRightHint, width), false)
+	}
+	return leftHint, rightHint
+}
+
+func modeFooterSegment(permissionMode string) *footerSegment {
+	mode := strings.TrimSpace(permissionMode)
+	switch mode {
+	case "acceptEdits":
+		return &footerSegment{Text: "⏵⏵ accept edits on", Color: &dark.permission, Bold: true}
+	case "bypassPermissions":
+		return &footerSegment{Text: "⏵⏵ bypass permissions on", Color: &dark.error, Bold: true}
+	case "dontAsk":
+		return &footerSegment{Text: "⏵⏵ don't ask on", Color: &dark.error, Bold: true}
+	case "plan":
+		return &footerSegment{Text: "⏸ plan mode on", Color: &dark.warning, Bold: true}
+	case "auto":
+		return &footerSegment{Text: "⏵⏵ auto mode on", Color: &dark.warning, Bold: true}
+	default:
+		return nil
+	}
+}
+
+func styleFooterSegments(parts []footerSegment, width int) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	sep := style(&dark.muted, nil, " · ", false)
+	plainSep := " · "
+
+	var plainParts []string
+	for _, p := range parts {
+		plainParts = append(plainParts, p.Text)
+	}
+	plainJoined := strings.Join(plainParts, plainSep)
+	if visibleWidth(plainJoined) > width {
+		return style(&dark.muted, nil, truncateVisible(plainJoined, width), false)
+	}
+
+	styled := make([]string, 0, len(parts))
+	for _, p := range parts {
+		styled = append(styled, style(p.Color, nil, p.Text, p.Bold))
+	}
+	return strings.Join(styled, sep)
+}
+
+func renderFooterLine(width int, left, right string) string {
+	if strings.TrimSpace(right) == "" {
+		return padVisible(left, width)
+	}
+
+	leftWidth := visibleWidth(left)
+	rightWidth := visibleWidth(right)
+	required := leftWidth + 1 + rightWidth
+	if required > width {
+		leftBudget := max(1, width-rightWidth-1)
+		leftPlain := ansiRE.ReplaceAllString(left, "")
+		left = style(&dark.muted, nil, truncateVisible(leftPlain, leftBudget), false)
+		leftWidth = visibleWidth(left)
+		required = leftWidth + 1 + rightWidth
+	}
+	if required > width {
+		rightBudget := max(1, width-leftWidth-1)
+		rightPlain := ansiRE.ReplaceAllString(right, "")
+		right = style(&dark.muted, nil, truncateVisible(rightPlain, rightBudget), false)
+		rightWidth = visibleWidth(right)
+	}
+	gap := width - leftWidth - rightWidth
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// wrapInputWithCursor wraps input for display and tracks cursor position across lines
+// cursorPos is a byte position in the input string
+func wrapInputWithCursor(input string, cursorPos int, firstWidth, continuationWidth int) ([]string, int, int) {
+	if firstWidth <= 0 {
+		firstWidth = 1
+	}
+	if continuationWidth <= 0 {
+		continuationWidth = 1
+	}
+	if input == "" {
+		return []string{""}, 0, 0
+	}
+
+	var lines []string
+	var current strings.Builder
+	currentWidth := 0
+	lineWidth := firstWidth
+	cursorLine := 0
+	cursorCol := 0
+	byteIdx := 0 // Track byte position
+
+	for _, r := range input {
+		runeLen := utf8.RuneLen(r)
+
+		if byteIdx == cursorPos {
+			// Record cursor position before this character
+			cursorLine = len(lines)
+			cursorCol = current.Len()
+		}
+
+		if r == '\n' {
+			lines = append(lines, current.String())
+			current.Reset()
+			currentWidth = 0
+			lineWidth = continuationWidth
+			byteIdx += runeLen
+			continue
+		}
+		rw := runeCellWidth(r)
+		if rw == 0 {
+			current.WriteRune(r)
+			byteIdx += runeLen
+			continue
+		}
+		if currentWidth > 0 && currentWidth+rw > lineWidth {
+			lines = append(lines, current.String())
+			current.Reset()
+			currentWidth = 0
+			lineWidth = continuationWidth
+		}
+		current.WriteRune(r)
+		currentWidth += rw
+		byteIdx += runeLen
+	}
+
+	// Handle cursor at end of input
+	if cursorPos >= len(input) {
+		cursorLine = len(lines)
+		cursorCol = current.Len()
+	}
+
+	lines = append(lines, current.String())
+	return lines, cursorLine, cursorCol
 }
 
 func wrapInputForDisplay(input string, firstWidth, continuationWidth int) []string {
@@ -527,9 +886,53 @@ func renderEntry(width int, entry TranscriptEntry, mode ViewMode, latestBashOutp
 func renderEntryWithContext(width int, entry TranscriptEntry, ctx RenderContext) string {
 	switch entry.Kind {
 	case "assistant", "assistant_streaming":
-		return renderMessageBlock(width, "Claude", &dark.claude, entry.Content)
+		// Strip <think> tags from content (some models output thinking as raw XML)
+		textContent, thinkingContent := stripThinkingTags(entry.Content)
+		var parts []string
+
+		// Render thinking as collapsed block if present
+		if thinkingContent != "" {
+			thinkEntry := TranscriptEntry{
+				Kind:    "thinking",
+				Content: thinkingContent,
+				UUID:    entry.UUID + "-think",
+			}
+			parts = append(parts, renderThinkingBlock(width, thinkEntry, ctx.Mode))
+		}
+
+		// Render text content if present
+		if textContent != "" {
+			parts = append(parts, renderAssistantTextBlock(width, textContent))
+		}
+
+		if len(parts) == 0 {
+			return "" // No content to render
+		}
+		return strings.Join(parts, "\n")
 	case "user":
-		return renderMessageBlock(width, "⏵", &dark.userLabel, entry.Content)
+		return renderUserTextBlock(width, entry.Content)
+	case "compact_summary":
+		// Compact summary renders with markdown enabled
+		return renderCompactSummaryBlock(width, entry.Content)
+	case "system":
+		// Compact boundary: "✻ Conversation compacted (Ctrl+O for history)"
+		if strings.Contains(entry.Content, "[compact boundary") {
+			return components.RenderDimText("✻ Conversation compacted (Ctrl+O for history)")
+		}
+		return ""
+	case "progress":
+		if ctx.Mode != ViewModeTranscript {
+			return ""
+		}
+		content := strings.TrimSpace(entry.Content)
+		if content == "" {
+			return ""
+		}
+		label := "progress"
+		if strings.TrimSpace(entry.Subtype) != "" {
+			label = strings.TrimSpace(entry.Subtype)
+		}
+		return style(&dark.subtle, nil, "["+label+"] "+content, false)
 	case "tool_use":
 		return renderToolUseBlockWithContext(width, entry, ctx)
 	case "grouped_tool_use":
@@ -567,7 +970,7 @@ func renderEntryWithContext(width int, entry TranscriptEntry, ctx RenderContext)
 		if entry.Title != "" {
 			return renderMessageBlock(width, entry.Title, &dark.warning, entry.Content)
 		}
-		return renderMessageBlock(width, "⏵", &dark.userLabel, entry.Content)
+		return renderUserTextBlock(width, entry.Content)
 	}
 }
 
@@ -632,6 +1035,85 @@ func renderMessageBlock(width int, label string, color *rgb, content string) str
 	// Add content lines
 	for _, line := range renderMarkdown(content, width-2) {
 		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func renderAssistantTextBlock(width int, content string) string {
+	return renderInlineMessageBlock(width, components.BlackCircle+" ", &dark.text, content, true, nil, nil)
+}
+
+func renderUserTextBlock(width int, content string) string {
+	return renderInlineMessageBlock(width, "⏵ ", &dark.userLabel, content, false, &dark.text, &dark.userMessageBackground)
+}
+
+func renderCompactSummaryBlock(width int, content string) string {
+	return renderInlineMessageBlock(width, components.BlackCircle+" ", &dark.text, content, true, nil, nil)
+}
+
+func renderSystemTextBlock(width int, entry TranscriptEntry) string {
+	prefixColor := &dark.subtle
+	contentColor := &dark.subtle
+	subtype := strings.ToLower(strings.TrimSpace(entry.Subtype))
+	switch {
+	case strings.Contains(subtype, "error"):
+		prefixColor = &dark.error
+		contentColor = &dark.error
+	case strings.Contains(subtype, "warning"):
+		prefixColor = &dark.warning
+		contentColor = &dark.warning
+	}
+	return renderInlineMessageBlock(width, components.BlackCircle+" ", prefixColor, entry.Content, false, contentColor, nil)
+}
+
+func renderInlineMessageBlock(width int, prefix string, prefixColor *rgb, content string, markdown bool, contentColor *rgb, backgroundColor *rgb) string {
+	prefixWidth := visibleWidth(prefix)
+	if prefixWidth <= 0 {
+		prefixWidth = 1
+	}
+
+	contentWidth := max(1, width-prefixWidth)
+	var contentLines []string
+	if markdown {
+		contentLines = renderMarkdown(content, contentWidth)
+	} else {
+		rawLines := splitLinesRaw(strings.TrimSpace(content))
+		if len(rawLines) == 0 {
+			rawLines = []string{""}
+		}
+		for _, raw := range rawLines {
+			wrapped := wrapText(raw, contentWidth)
+			if len(wrapped) == 0 {
+				wrapped = []string{""}
+			}
+			contentLines = append(contentLines, wrapped...)
+		}
+	}
+	if len(contentLines) == 0 {
+		contentLines = []string{""}
+	}
+
+	prefixStyled := style(prefixColor, backgroundColor, prefix, false)
+	indent := strings.Repeat(" ", prefixWidth)
+	lines := make([]string, 0, len(contentLines))
+
+	firstLine := contentLines[0]
+	if contentColor != nil || backgroundColor != nil {
+		firstLine = style(contentColor, backgroundColor, firstLine, false)
+	}
+	lines = append(lines, prefixStyled+firstLine)
+
+	indentSegment := indent
+	if backgroundColor != nil {
+		indentSegment = style(nil, backgroundColor, indent, false)
+	}
+
+	for _, line := range contentLines[1:] {
+		if contentColor != nil || backgroundColor != nil {
+			line = style(contentColor, backgroundColor, line, false)
+		}
+		lines = append(lines, indentSegment+line)
 	}
 
 	return strings.Join(lines, "\n")
@@ -725,16 +1207,171 @@ func renderFeedColumn(width int, cfg config.Config, state bootstrap.State, sessi
 		tipLines = append(tipLines, "Note: Claude works best when launched inside your project directory.")
 	}
 
+	// Load recent activity from sessions in current project directory
+	recentSessions := loadRecentActivity(cwd, sessionID)
+
 	lines := []string{tipsTitle}
 	for _, line := range tipLines {
 		lines = append(lines, style(&dark.text, nil, truncateVisible(line, width), false))
 	}
 	lines = append(lines, style(&dark.claudeDim, nil, strings.Repeat("─", width), false))
 	lines = append(lines, recentTitle)
-	lines = append(lines, style(&dark.muted, nil, "No recent activity", false))
+
+	// Show recent sessions or "No recent activity"
+	if len(recentSessions) > 0 {
+		for _, s := range recentSessions {
+			// Format: session_id_short · date · title preview
+			idShort := s.SessionID
+			if len(idShort) > 8 {
+				idShort = idShort[:8]
+			}
+			title := s.Title
+			if len(title) > 30 {
+				title = title[:30] + "..."
+			}
+			date := s.Date
+			lineText := fmt.Sprintf("%s · %s · %s", idShort, date, title)
+			lines = append(lines, style(&dark.muted, nil, truncateVisible(lineText, width), false))
+		}
+	} else {
+		lines = append(lines, style(&dark.muted, nil, "No recent activity", false))
+	}
+
 	lines = append(lines, "")
 	lines = append(lines, style(&dark.subtle, nil, truncateVisible("session "+sessionID+" · turn "+strconv.Itoa(turn), width), false))
 	return lines
+}
+
+// RecentSessionInfo holds info for recent activity display
+type RecentSessionInfo struct {
+	SessionID string
+	Title     string
+	Date      string
+}
+
+// loadRecentActivity loads recent sessions from the current project directory
+// Uses Go CLI independent storage: ~/.claude-go/projects/<project>/
+func loadRecentActivity(cwd, currentSessionID string) []RecentSessionInfo {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+
+	// Sanitize cwd to get project directory name
+	sanitized := sanitizePathForUI(cwd)
+	// Use Go CLI specific projects directory
+	projectsDir := filepath.Join(home, ".claude-go", "projects", sanitized)
+
+	// Check if project directory exists
+	if _, err := os.Stat(projectsDir); os.IsNotExist(err) {
+		return nil
+	}
+
+	// List session files
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return nil
+	}
+
+	var sessions []RecentSessionInfo
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+
+		sessionID := strings.TrimSuffix(entry.Name(), ".jsonl")
+
+		// Skip current session
+		if sessionID == currentSessionID {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		// Extract first prompt from session file
+		title := extractFirstPromptFromSession(filepath.Join(projectsDir, entry.Name()))
+		if title == "" {
+			title = "(no prompt)"
+		}
+		if len(title) > 50 {
+			title = title[:50] + "..."
+		}
+
+		sessions = append(sessions, RecentSessionInfo{
+			SessionID: sessionID,
+			Title:     title,
+			Date:      info.ModTime().Format("Jan 02"),
+		})
+	}
+
+	// Sort by modification time (most recent first) and take top 3
+	sort.Slice(sessions, func(i, j int) bool {
+		// Parse dates and compare (simplified: just compare SessionID timestamps embedded)
+		return sessions[i].SessionID > sessions[j].SessionID // UUIDs have timestamp component
+	})
+
+	if len(sessions) > 3 {
+		sessions = sessions[:3]
+	}
+
+	return sessions
+}
+
+// sanitizePathForUI converts a path to a safe directory name for UI display
+func sanitizePathForUI(path string) string {
+	var result []rune
+	for _, r := range path {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			result = append(result, r)
+		} else {
+			result = append(result, '-')
+		}
+	}
+	s := string(result)
+	if len(s) > 64 {
+		s = s[:64]
+	}
+	return s
+}
+
+// extractFirstPromptFromSession reads first user message from session file
+func extractFirstPromptFromSession(path string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+
+		// JSONL format: {"type": "message", "message": {"role": "user", "content": "..."}}
+		if entry["type"] == "message" {
+			if msg, ok := entry["message"].(map[string]interface{}); ok {
+				if role, _ := msg["role"].(string); role == "user" {
+					if content, ok := msg["content"].(string); ok {
+						if len(content) > 100 {
+							content = content[:100]
+						}
+						return content
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func renderBodyFiller(width, height int) string {
@@ -746,18 +1383,6 @@ func renderBodyFiller(width, height int) string {
 		lines = append(lines, strings.Repeat(" ", width))
 	}
 	return strings.Join(lines, "\n")
-}
-
-func buddyDuckSprite() []string {
-	bodyColor := &dark.success
-	nameColor := &dark.muted
-	return []string{
-		style(bodyColor, nil, "    __      ", false),
-		style(bodyColor, nil, "  <(o )___  ", false),
-		style(bodyColor, nil, "   (  ._>   ", false),
-		style(bodyColor, nil, "    `--´    ", false),
-		style(nameColor, nil, "   Gravy    ", true),
-	}
 }
 
 func mergeColumns(left, right []string, leftWidth, rightWidth int) []string {
@@ -775,4 +1400,51 @@ func mergeColumns(left, right []string, leftWidth, rightWidth int) []string {
 		out = append(out, padVisible(l, leftWidth)+"  "+padVisible(r, rightWidth))
 	}
 	return out
+}
+
+// stripThinkingTags removes <think>...</think> tags from text content.
+// Returns the text content without thinking tags and the extracted thinking content.
+// This handles models that output thinking as raw XML tags rather than structured blocks.
+func stripThinkingTags(content string) (textContent string, thinkingContent string) {
+	// Match both <think>...</think> and <thinking>...</thinking> patterns
+	// Some models use different tag names
+	patterns := []struct {
+		start string
+		end   string
+	}{
+		{"<think>", "</think>"},
+		{"<thinking>", "</thinking>"},
+	}
+
+	textContent = content
+	var thinkParts []string
+
+	for _, pat := range patterns {
+		for {
+			startIdx := strings.Index(textContent, pat.start)
+			if startIdx == -1 {
+				break
+			}
+			endIdx := strings.Index(textContent[startIdx:], pat.end)
+			if endIdx == -1 {
+				// Incomplete tag - keep searching from after start tag
+				// This handles streaming where end tag hasn't arrived yet
+				thinkParts = append(thinkParts, textContent[startIdx+len(pat.start):])
+				textContent = textContent[:startIdx]
+				break
+			}
+			// Extract thinking content
+			thinkEnd := startIdx + endIdx
+			thinkText := textContent[startIdx+len(pat.start) : thinkEnd]
+			thinkParts = append(thinkParts, thinkText)
+			// Remove the entire tag block from text content
+			textContent = textContent[:startIdx] + textContent[thinkEnd+len(pat.end):]
+		}
+	}
+
+	if len(thinkParts) > 0 {
+		thinkingContent = strings.TrimSpace(strings.Join(thinkParts, "\n"))
+	}
+	textContent = strings.TrimSpace(textContent)
+	return
 }

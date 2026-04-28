@@ -2,9 +2,10 @@ package lsp
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"path/filepath"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // LSPToolName is the name of the LSP tool
@@ -44,6 +45,24 @@ const (
 	OpOutgoingCalls        = "outgoingCalls"
 )
 
+// globalManager is the global LSP manager instance
+var globalManager *Manager
+
+// SetManager sets the global LSP manager (called during app initialization)
+func SetManager(m *Manager) {
+	globalManager = m
+}
+
+// GetManager returns the global LSP manager
+func GetManager() *Manager {
+	return globalManager
+}
+
+// RegisterLSPTools registers LSP tools to the registry
+func RegisterLSPTools(r *tool.Registry) {
+	r.Register(LSPTool{})
+}
+
 // LSPTool implements the LSP tool for code intelligence
 type LSPTool struct{}
 
@@ -70,50 +89,137 @@ func (LSPTool) ParametersSchema() map[string]any {
 			OpIncomingCalls,
 			OpOutgoingCalls,
 		),
-		"filePath":  tool.SchemaString("The absolute or relative path to the file"),
+		"filePath":  tool.SchemaString("The path to the file"),
 		"line":      tool.SchemaInteger("The line number (1-based, as shown in editors)"),
 		"character": tool.SchemaInteger("The character offset (1-based, as shown in editors)"),
-	}, "operation", "filePath", "line", "character")
+		"query":     tool.SchemaString("For workspaceSymbol: the search query"),
+		"symbolData": tool.SchemaObject(map[string]any{
+			"name": tool.SchemaString("Symbol name"),
+			"kind": tool.SchemaInteger("Symbol kind"),
+			"uri":  tool.SchemaString("File URI"),
+			"range": tool.SchemaObject(map[string]any{
+				"start": tool.SchemaObject(map[string]any{
+					"line":      tool.SchemaInteger("Start line"),
+					"character": tool.SchemaInteger("Start character"),
+				}),
+				"end": tool.SchemaObject(map[string]any{
+					"line":      tool.SchemaInteger("End line"),
+					"character": tool.SchemaInteger("End character"),
+				}),
+			}),
+		}, "Symbol data from prepareCallHierarchy"),
+	}, "operation", "filePath")
 }
 
 // Call executes the LSP tool
 func (t LSPTool) Call(ctx context.Context, in tool.Input, runtime tool.Runtime) (tool.Result, error) {
 	operation := getString(in, "operation")
 	filePath := getString(in, "filePath")
-	line := getInt(in, "line", 1)
-	character := getInt(in, "character", 1)
+	line := getUint32(in, "line", 1)
+	character := getUint32(in, "character", 1)
 
-	if operation == "" {
-		return tool.Result{}, fmt.Errorf("operation is required")
-	}
-	if filePath == "" {
-		return tool.Result{}, fmt.Errorf("filePath is required")
-	}
-
-	// Validate operation
-	validOps := map[string]bool{
-		OpGoToDefinition:       true,
-		OpFindReferences:       true,
-		OpHover:                true,
-		OpDocumentSymbol:       true,
-		OpWorkspaceSymbol:      true,
-		OpGoToImplementation:   true,
-		OpPrepareCallHierarchy: true,
-		OpIncomingCalls:        true,
-		OpOutgoingCalls:        true,
-	}
-	if !validOps[operation] {
-		return tool.Result{}, fmt.Errorf("invalid operation: %s", operation)
+	m := globalManager
+	if m == nil {
+		m = NewManager()
+		globalManager = m
 	}
 
-	// TODO: Implement actual LSP communication
-	// This requires integration with an LSP client/manager
-	// For now, return a placeholder result
-	result := fmt.Sprintf("LSP operation '%s' on %s at line %d, character %d not yet implemented - requires LSP server integration",
-		operation, filePath, line, character)
+	var content string
+	var errStr string
+
+	switch operation {
+	case OpGoToDefinition:
+		if filePath == "" {
+			return tool.Result{}, errors.New("filePath is required")
+		}
+		result := GoToDefinition(ctx, m, filePath, line, character)
+		content = result.Content
+		errStr = result.Error
+
+	case OpFindReferences:
+		if filePath == "" {
+			return tool.Result{}, errors.New("filePath is required")
+		}
+		result := FindReferences(ctx, m, filePath, line, character)
+		content = result.Content
+		errStr = result.Error
+
+	case OpHover:
+		if filePath == "" {
+			return tool.Result{}, errors.New("filePath is required")
+		}
+		result := HoverOp(ctx, m, filePath, line, character)
+		content = result.Content
+		errStr = result.Error
+
+	case OpDocumentSymbol:
+		if filePath == "" {
+			return tool.Result{}, errors.New("filePath is required")
+		}
+		result := DocumentSymbolOp(ctx, m, filePath)
+		content = result.Content
+		errStr = result.Error
+
+	case OpWorkspaceSymbol:
+		query := getString(in, "query")
+		result := WorkspaceSymbol(ctx, m, query)
+		content = result.Content
+		errStr = result.Error
+
+	case OpGoToImplementation:
+		if filePath == "" {
+			return tool.Result{}, errors.New("filePath is required")
+		}
+		result := GoToImplementation(ctx, m, filePath, line, character)
+		content = result.Content
+		errStr = result.Error
+
+	case OpPrepareCallHierarchy:
+		if filePath == "" {
+			return tool.Result{}, errors.New("filePath is required")
+		}
+		result := PrepareCallHierarchy(ctx, m, filePath, line, character)
+		content = result.Content
+		errStr = result.Error
+
+	case OpIncomingCalls:
+		// Requires symbol data from prepareCallHierarchy
+		item := extractCallHierarchyItem(in)
+		if item.Name == "" {
+			return tool.Result{}, errors.New("symbolData is required for incomingCalls (run prepareCallHierarchy first)")
+		}
+		result := IncomingCalls(ctx, m, item)
+		content = result.Content
+		errStr = result.Error
+
+	case OpOutgoingCalls:
+		// Requires symbol data from prepareCallHierarchy
+		item := extractCallHierarchyItem(in)
+		if item.Name == "" {
+			return tool.Result{}, errors.New("symbolData is required for outgoingCalls (run prepareCallHierarchy first)")
+		}
+		result := OutgoingCalls(ctx, m, item)
+		content = result.Content
+		errStr = result.Error
+
+	default:
+		return tool.Result{}, errors.New("invalid operation: " + operation)
+	}
+
+	if errStr != "" {
+		return tool.Result{
+			Content: "LSP error: " + errStr,
+			Meta: map[string]any{
+				"operation": operation,
+				"filePath":  filePath,
+				"line":      line,
+				"character": character,
+			},
+		}, nil
+	}
 
 	return tool.Result{
-		Content: result,
+		Content: content,
 		Meta: map[string]any{
 			"operation": operation,
 			"filePath":  filePath,
@@ -123,9 +229,41 @@ func (t LSPTool) Call(ctx context.Context, in tool.Input, runtime tool.Runtime) 
 	}, nil
 }
 
-// RegisterLSPTools registers LSP tools to the registry
-func RegisterLSPTools(r *tool.Registry) {
-	r.Register(LSPTool{})
+// extractCallHierarchyItem extracts a CallHierarchyItem from tool input
+func extractCallHierarchyItem(in tool.Input) CallHierarchyItem {
+	var item CallHierarchyItem
+	if data, ok := in["symbolData"]; ok {
+		if m, ok := data.(map[string]any); ok {
+			if name, ok := m["name"].(string); ok {
+				item.Name = name
+			}
+			if uri, ok := m["uri"].(string); ok {
+				item.URI = URI(uri)
+			}
+			if kind, ok := m["kind"].(float64); ok {
+				item.Kind = uint32(kind)
+			}
+			if r, ok := m["range"].(map[string]any); ok {
+				if start, ok := r["start"].(map[string]any); ok {
+					if line, ok := start["line"].(float64); ok {
+						item.Range.Start.Line = uint32(line)
+					}
+					if char, ok := start["character"].(float64); ok {
+						item.Range.Start.Character = uint32(char)
+					}
+				}
+				if end, ok := r["end"].(map[string]any); ok {
+					if line, ok := end["line"].(float64); ok {
+						item.Range.End.Line = uint32(line)
+					}
+					if char, ok := end["character"].(float64); ok {
+						item.Range.End.Character = uint32(char)
+					}
+				}
+			}
+		}
+	}
+	return item
 }
 
 // Helper functions for extracting values from Input
@@ -138,16 +276,29 @@ func getString(in tool.Input, key string) string {
 	return ""
 }
 
-func getInt(in tool.Input, key string, def int) int {
+func getUint32(in tool.Input, key string, def uint32) uint32 {
 	if v, ok := in[key]; ok {
 		switch n := v.(type) {
 		case int:
-			return n
+			if n > 0 {
+				return uint32(n)
+			}
 		case int64:
-			return int(n)
+			if n > 0 {
+				return uint32(n)
+			}
 		case float64:
-			return int(n)
+			if n > 0 {
+				return uint32(n)
+			}
 		}
 	}
 	return def
+}
+
+func getFileName(filePath string) string {
+	if filePath == "" {
+		return ""
+	}
+	return filepath.Base(filePath)
 }

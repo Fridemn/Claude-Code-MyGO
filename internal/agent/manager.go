@@ -8,12 +8,24 @@ import (
 	"sync"
 	"time"
 
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/engine"
-	"claude-code-go/internal/session"
-	"claude-code-go/internal/task"
-	"claude-code-go/internal/tool"
-	"claude-code-go/internal/types"
+	"claude-go/internal/config"
+	"claude-go/internal/engine"
+	"claude-go/internal/session"
+	"claude-go/internal/task"
+	"claude-go/internal/tool"
+	"claude-go/internal/types"
+)
+
+// Constants for retry behavior
+const (
+	// maxAgentEmptyResponseRetries is the maximum number of retries when
+	// the engine returns "empty assistant response after tool execution" error.
+	// This allows the agent to recover from transient proxy/provider issues.
+	maxAgentEmptyResponseRetries = 3
+
+	// recoveryHintDelayMs is a delay between retries to allow the model/provider
+	// to stabilize.
+	recoveryHintDelayMs = 500
 )
 
 type SpawnInput struct {
@@ -210,20 +222,57 @@ func (m *Manager) runAgent(ctx context.Context, definition Definition, model, pr
 		input = definition.InitialPrompt + "\n\n" + prompt
 	}
 
-	response, err := eng.Submit(ctx, input)
-	if err != nil {
-		return "", eng.Messages(), eng.SessionID(), err
+	// Retry loop for recoverable errors like "empty assistant response after tool execution"
+	var lastErr error
+	var retryCount int
+	
+	for retryCount = 0; retryCount <= maxAgentEmptyResponseRetries; retryCount++ {
+		response, err := eng.Submit(ctx, input)
+		if err == nil {
+			if definition.ReadOnly {
+				return response.Text, eng.Messages(), eng.SessionID(), nil
+			}
+			if m.tools == nil {
+				return response.Text, eng.Messages(), eng.SessionID(), nil
+			}
+			return response.Text, eng.Messages(), eng.SessionID(), nil
+		}
+
+		// Check if this is a retryable error
+		if !isRetryableEmptyResponseError(err) {
+			// Non-retryable error, return immediately
+			return "", eng.Messages(), eng.SessionID(), err
+		}
+
+		// Record the error for potential final return
+		lastErr = err
+
+		// If we have more retries available, prepare recovery input
+		if retryCount < maxAgentEmptyResponseRetries {
+			// Add a small delay to allow the provider to stabilize
+			time.Sleep(recoveryHintDelayMs * time.Millisecond)
+			
+			// Inject a recovery hint to help the model continue
+			input = prompt + fmt.Sprintf("\n\n[System: The previous attempt returned an empty response (attempt %d of %d). Please continue with the task.]", retryCount+1, maxAgentEmptyResponseRetries+1)
+		}
 	}
 
-	if definition.ReadOnly {
-		return response.Text, eng.Messages(), eng.SessionID(), nil
+	// All retries exhausted, return the last error with context
+	if lastErr != nil {
+		return "", eng.Messages(), eng.SessionID(), fmt.Errorf("agent failed after %d retries: %w", maxAgentEmptyResponseRetries+1, lastErr)
 	}
+	return "", eng.Messages(), eng.SessionID(), nil
+}
 
-	if m.tools == nil {
-		return response.Text, eng.Messages(), eng.SessionID(), nil
+// isRetryableEmptyResponseError checks if the error is the "empty assistant response"
+// error that can be recovered by retrying with a recovery hint.
+func isRetryableEmptyResponseError(err error) bool {
+	if err == nil {
+		return false
 	}
-
-	return response.Text, eng.Messages(), eng.SessionID(), nil
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "empty assistant response") ||
+		strings.Contains(errStr, "model returned empty assistant response")
 }
 
 func composeSystemPrompt(definition Definition, base string) string {

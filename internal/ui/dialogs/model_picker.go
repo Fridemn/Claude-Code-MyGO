@@ -3,7 +3,7 @@ package dialogs
 import (
 	"fmt"
 
-	"claude-code-go/internal/ui/components"
+	"claude-go/internal/ui/components"
 )
 
 type ModelPickerAction struct {

@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -24,6 +25,53 @@ const (
 	ErrorTypeConnection     = "connection_error"
 	ErrorTypeTimeout        = "timeout_error"
 	ErrorTypeSSL            = "ssl_error"
+)
+
+// Error message constants (user-facing)
+const (
+	APIErrorPrefix                    = "API Error"
+	PromptTooLongMessage              = "Prompt is too long"
+	CreditBalanceTooLowMessage        = "Credit balance is too low"
+	InvalidAPIKeyMessage              = "Not logged in · Please run /login"
+	InvalidAPIKeyExternalMessage      = "Invalid API key · Fix external API key"
+	OrgDisabledEnvKeyWithOAuthMessage = "Your ANTHROPIC_API_KEY belongs to a disabled organization · Unset the environment variable to use your subscription instead"
+	OrgDisabledEnvKeyMessage          = "Your ANTHROPIC_API_KEY belongs to a disabled organization · Update or unset the environment variable"
+	TokenRevokedMessage               = "OAuth token revoked · Please run /login"
+	CCRAuthMessage                    = "Authentication error · This may be a temporary network issue, please try again"
+	Repeated529Message                = "Repeated 529 Overloaded errors"
+	APITimeoutMessage                 = "Request timed out"
+	OAuthOrgNotAllowedMessage         = "Your account does not have access to Claude Code. Please run /login."
+)
+
+// APIErrorClassification represents a classification of API errors for analytics
+type APIErrorClassification string
+
+const (
+	ClassificationAborted              APIErrorClassification = "aborted"
+	ClassificationAPITimeout           APIErrorClassification = "api_timeout"
+	ClassificationRepeated529          APIErrorClassification = "repeated_529"
+	ClassificationCapacityOffSwitch    APIErrorClassification = "capacity_off_switch"
+	ClassificationRateLimit            APIErrorClassification = "rate_limit"
+	ClassificationServerOverload       APIErrorClassification = "server_overload"
+	ClassificationPromptTooLong        APIErrorClassification = "prompt_too_long"
+	ClassificationPDFTooLarge          APIErrorClassification = "pdf_too_large"
+	ClassificationPDFPasswordProtected APIErrorClassification = "pdf_password_protected"
+	ClassificationImageTooLarge        APIErrorClassification = "image_too_large"
+	ClassificationToolUseMismatch      APIErrorClassification = "tool_use_mismatch"
+	ClassificationUnexpectedToolResult APIErrorClassification = "unexpected_tool_result"
+	ClassificationDuplicateToolUseID   APIErrorClassification = "duplicate_tool_use_id"
+	ClassificationInvalidModel         APIErrorClassification = "invalid_model"
+	ClassificationCreditBalanceLow     APIErrorClassification = "credit_balance_low"
+	ClassificationInvalidAPIKey        APIErrorClassification = "invalid_api_key"
+	ClassificationTokenRevoked         APIErrorClassification = "token_revoked"
+	ClassificationOAuthOrgNotAllowed   APIErrorClassification = "oauth_org_not_allowed"
+	ClassificationAuthError            APIErrorClassification = "auth_error"
+	ClassificationBedrockModelAccess   APIErrorClassification = "bedrock_model_access"
+	ClassificationServerError          APIErrorClassification = "server_error"
+	ClassificationClientError          APIErrorClassification = "client_error"
+	ClassificationSSLCertError         APIErrorClassification = "ssl_cert_error"
+	ClassificationConnectionError      APIErrorClassification = "connection_error"
+	ClassificationUnknown              APIErrorClassification = "unknown"
 )
 
 // SSLErrorCodes are OpenSSL/TLS error codes that indicate certificate issues
@@ -98,7 +146,8 @@ func (e *APIError) Unwrap() error {
 
 // IsRateLimitError checks if error is a rate limit error
 func IsRateLimitError(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode == 429
 	}
 	return false
@@ -106,7 +155,8 @@ func IsRateLimitError(err error) bool {
 
 // IsAuthenticationError checks if error is an authentication error
 func IsAuthenticationError(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode == 401 || apiErr.StatusCode == 403
 	}
 	return false
@@ -114,7 +164,8 @@ func IsAuthenticationError(err error) bool {
 
 // IsPermissionError checks if error is a permission error
 func IsPermissionError(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode == 403
 	}
 	return false
@@ -122,7 +173,8 @@ func IsPermissionError(err error) bool {
 
 // IsNotFoundError checks if error is a not found error
 func IsNotFoundError(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode == 404
 	}
 	return false
@@ -130,7 +182,8 @@ func IsNotFoundError(err error) bool {
 
 // IsServerError checks if error is a server error (5xx)
 func IsServerError(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode >= 500
 	}
 	return false
@@ -138,7 +191,8 @@ func IsServerError(err error) bool {
 
 // IsOverloadedError checks if error is an overloaded/server busy error
 func IsOverloadedError(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode == 529 ||
 			strings.Contains(strings.ToLower(apiErr.Message), "overloaded")
 	}
@@ -147,15 +201,20 @@ func IsOverloadedError(err error) bool {
 
 // IsTimeoutError checks if error is a timeout error
 func IsTimeoutError(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
-		return apiErr.StatusCode == 408 || apiErr.Type == ErrorTypeTimeout
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode == 408 || apiErr.Type == ErrorTypeTimeout {
+			return true
+		}
 	}
 	// Check for net/url timeout
-	if netErr, ok := err.(*url.Error); ok {
+	var netErr *url.Error
+	if errors.As(err, &netErr) {
 		return netErr.Timeout()
 	}
 	// Check for TLS handshake timeout
-	if _, ok := err.(*tls.CertificateVerificationError); ok {
+	var tlsCertErr *tls.CertificateVerificationError
+	if errors.As(err, &tlsCertErr) {
 		return true
 	}
 	// Check for custom timeout errors (like StreamIdleTimeoutError)
@@ -188,27 +247,187 @@ func IsContentFilterError(err error) bool {
 	return false
 }
 
+func isPromptTooLongMessageText(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "prompt is too long") ||
+		strings.Contains(lower, "prompt exceeds max length") ||
+		strings.Contains(lower, "input characters limit") ||
+		strings.Contains(lower, "input character limit")
+}
+
 // IsLengthError checks if error is due to max tokens
 func IsLengthError(err error) bool {
 	if apiErr, ok := err.(*APIError); ok {
 		return apiErr.Code == "length" ||
 			strings.Contains(strings.ToLower(apiErr.Message), "maximum context length") ||
-			strings.Contains(strings.ToLower(apiErr.Message), "prompt is too long")
+			isPromptTooLongMessageText(apiErr.Message)
 	}
 	return false
 }
 
+// ContextOverflowError represents an error when input tokens exceed context window
+type ContextOverflowError struct {
+	InputTokens  int
+	MaxTokens    int
+	ContextLimit int
+	Message      string
+}
+
+func (e *ContextOverflowError) Error() string {
+	return e.Message
+}
+
+// ParseContextOverflowError parses an API error for context overflow details
+// Matches TypeScript: parseMaxTokensContextOverflowError
+// Example error message: "input length and `max_tokens` exceed context limit: 188059 + 20000 > 200000"
+func ParseContextOverflowError(err error) *ContextOverflowError {
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		return nil
+	}
+
+	// Must be a 400 error with context overflow message
+	if apiErr.StatusCode != 400 {
+		return nil
+	}
+
+	msg := apiErr.Message
+
+	// Check for context overflow error patterns
+	if !strings.Contains(msg, "exceed context limit") &&
+		!strings.Contains(msg, "input token limit") &&
+		!strings.Contains(msg, "context_window_exceeded") {
+		return nil
+	}
+
+	// Try to parse the detailed format: "input length and `max_tokens` exceed context limit: 188059 + 20000 > 200000"
+	// or: "input token limit is 202752" (simpler format)
+	patterns := []string{
+		`input length and .max_tokens. exceed context limit: (\d+) \+ (\d+) > (\d+)`,
+		`input length exceeds context limit: (\d+) \+ (\d+) > (\d+)`,
+		`input token limit is (\d+)`,
+	}
+
+	for _, pattern := range patterns {
+		// Simple regex simulation since we don't want to import regexp
+		result := parseOverflowMatch(msg, pattern)
+		if result != nil {
+			return result
+		}
+	}
+
+	// If we found the error but couldn't parse details, return a generic error
+	return &ContextOverflowError{
+		Message: msg,
+	}
+}
+
+// parseOverflowMatch attempts to match overflow error patterns
+func parseOverflowMatch(msg, pattern string) *ContextOverflowError {
+	// Pattern 1: "input length and `max_tokens` exceed context limit: X + Y > Z"
+	if strings.Contains(pattern, "exceed context limit:") {
+		// Try the detailed format first
+		if idx := strings.Index(msg, "exceed context limit:"); idx != -1 {
+			rest := msg[idx+len("exceed context limit:"):]
+			rest = strings.TrimSpace(rest)
+
+			// Parse "188059 + 20000 > 200000"
+			var inputTokens, maxTokens, contextLimit int
+			var n int
+			// Try to parse using simple string parsing
+			parts := strings.Fields(rest)
+			for _, part := range parts {
+				if part == "+" || part == ">" {
+					continue
+				}
+				if n == 0 {
+					fmt.Sscanf(part, "%d", &inputTokens)
+					n++
+				} else if n == 1 {
+					fmt.Sscanf(part, "%d", &maxTokens)
+					n++
+				} else if n == 2 {
+					fmt.Sscanf(part, "%d", &contextLimit)
+					break
+				}
+			}
+
+			if inputTokens > 0 && contextLimit > 0 {
+				return &ContextOverflowError{
+					InputTokens:  inputTokens,
+					MaxTokens:    maxTokens,
+					ContextLimit: contextLimit,
+					Message:      msg,
+				}
+			}
+		}
+	}
+
+	// Pattern 2: "input token limit is X"
+	if strings.Contains(pattern, "input token limit is") {
+		if idx := strings.Index(msg, "input token limit is"); idx != -1 {
+			rest := msg[idx+len("input token limit is"):]
+			rest = strings.TrimSpace(rest)
+			var limit int
+			if n, _ := fmt.Sscanf(rest, "%d", &limit); n == 1 && limit > 0 {
+				return &ContextOverflowError{
+					InputTokens:  limit, // This is actually the limit, not input tokens
+					ContextLimit: limit,
+					Message:      msg,
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// IsContextOverflowError checks if error is a context overflow error
+func IsContextOverflowError(err error) bool {
+	return ParseContextOverflowError(err) != nil
+}
+
+// CalculateAdjustedMaxTokens calculates a safe max_tokens to avoid context overflow
+// Matches TypeScript logic for FLOOR_OUTPUT_TOKENS and safety buffer
+func CalculateAdjustedMaxTokens(overflow *ContextOverflowError, thinkingBudgetTokens int) int {
+	const floorOutputTokens = 3000
+	const safetyBuffer = 1000
+
+	availableContext := overflow.ContextLimit - overflow.InputTokens - safetyBuffer
+	if availableContext < floorOutputTokens {
+		availableContext = floorOutputTokens
+	}
+
+	// Ensure enough tokens for thinking + at least 1 output token
+	minRequired := thinkingBudgetTokens + 1
+
+	adjusted := availableContext
+	if adjusted < floorOutputTokens {
+		adjusted = floorOutputTokens
+	}
+	if adjusted < minRequired {
+		adjusted = minRequired
+	}
+
+	return adjusted
+}
+
 // IsConnectionError checks if error is a connection error
 func IsConnectionError(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
-		return apiErr.Type == ErrorTypeConnection
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.Type == ErrorTypeConnection {
+			return true
+		}
 	}
 	// Check for net errors
-	if _, ok := err.(*net.OpError); ok {
+	var netOpErr *net.OpError
+	if errors.As(err, &netOpErr) {
 		return true
 	}
 	// Check for TLS errors
-	if _, ok := err.(*tls.CertificateVerificationError); ok {
+	var tlsCertErr *tls.CertificateVerificationError
+	if errors.As(err, &tlsCertErr) {
 		return true
 	}
 	return false
@@ -217,14 +436,16 @@ func IsConnectionError(err error) bool {
 // IsSSLError checks if error is an SSL/TLS error
 func IsSSLError(err error) bool {
 	// Check API error type
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		if apiErr.Type == ErrorTypeSSL {
 			return true
 		}
 	}
 
 	// Check for TLS certificate verification errors
-	if _, ok := err.(*tls.CertificateVerificationError); ok {
+	var tlsCertErr *tls.CertificateVerificationError
+	if errors.As(err, &tlsCertErr) {
 		return true
 	}
 
@@ -553,4 +774,287 @@ func SanitizeMessage(message string) string {
 		return ""
 	}
 	return message
+}
+
+// PromptTooLongTokenCounts holds parsed token counts from a prompt-too-long error
+type PromptTooLongTokenCounts struct {
+	ActualTokens int
+	LimitTokens  int
+	HasValues    bool
+}
+
+// ParsePromptTooLongTokenCounts parses actual/limit token counts from a raw
+// prompt-too-long API error message like "prompt is too long: 137500 tokens > 135000 maximum".
+func ParsePromptTooLongTokenCounts(rawMessage string) PromptTooLongTokenCounts {
+	// Pattern: "prompt is too long... X tokens > Y maximum"
+	lower := strings.ToLower(rawMessage)
+	if !strings.Contains(lower, "prompt is too long") {
+		return PromptTooLongTokenCounts{}
+	}
+
+	// Find "tokens >" pattern
+	tokensIdx := strings.Index(lower, "tokens >")
+	if tokensIdx == -1 {
+		return PromptTooLongTokenCounts{}
+	}
+
+	// Find the two numbers before "tokens >" and after ">"
+	// Look for "X tokens > Y maximum" pattern
+	beforeTokens := lower[:tokensIdx]
+	afterTokens := lower[tokensIdx+len("tokens >"):]
+
+	// Find the actual token count (the number right before "tokens")
+	// Scan backwards from "tokens" to find the number
+	actualStr := ""
+	for i := len(beforeTokens) - 1; i >= 0; i-- {
+		c := beforeTokens[i]
+		if c >= '0' && c <= '9' {
+			// Build number in reverse
+			actualStr = string(c) + actualStr
+		} else if actualStr != "" {
+			// End of number
+			break
+		}
+	}
+	if actualStr == "" {
+		return PromptTooLongTokenCounts{}
+	}
+
+	// Find the limit token count (the number right after ">")
+	limitStr := ""
+	for i := 0; i < len(afterTokens); i++ {
+		c := afterTokens[i]
+		if c >= '0' && c <= '9' {
+			limitStr += string(c)
+		} else if limitStr != "" {
+			// End of number
+			break
+		}
+	}
+	if limitStr == "" {
+		return PromptTooLongTokenCounts{}
+	}
+
+	var actual, limit int
+	_, _ = fmt.Sscanf(actualStr, "%d", &actual)
+	_, _ = fmt.Sscanf(limitStr, "%d", &limit)
+
+	if actual > 0 && limit > 0 {
+		return PromptTooLongTokenCounts{
+			ActualTokens: actual,
+			LimitTokens:  limit,
+			HasValues:    true,
+		}
+	}
+
+	return PromptTooLongTokenCounts{}
+}
+
+// GetPromptTooLongTokenGap returns how many tokens over the limit a prompt-too-long error reports
+func GetPromptTooLongTokenGap(rawError string) int {
+	counts := ParsePromptTooLongTokenCounts(rawError)
+	if !counts.HasValues {
+		return 0
+	}
+	gap := counts.ActualTokens - counts.LimitTokens
+	if gap > 0 {
+		return gap
+	}
+	return 0
+}
+
+// IsMediaSizeError checks if raw error text is a media-size rejection
+func IsMediaSizeError(raw string) bool {
+	lower := strings.ToLower(raw)
+	hasImageExceeds := strings.Contains(lower, "image exceeds") && strings.Contains(lower, "maximum")
+	hasImageDimensions := strings.Contains(lower, "image dimensions exceed") && strings.Contains(lower, "many-image")
+	hasPDFPages := strings.Contains(lower, "maximum of") && strings.Contains(lower, "pdf pages")
+	return hasImageExceeds || hasImageDimensions || hasPDFPages
+}
+
+// Is529Error checks if error is a 529 overloaded error
+func Is529Error(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	// Check for 529 status code or overloaded error in message
+	return apiErr.StatusCode == 529 ||
+		strings.Contains(apiErr.Message, `"type":"overloaded_error"`)
+}
+
+// IsOAuthTokenRevokedError checks if error indicates OAuth token was revoked
+func IsOAuthTokenRevokedError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.StatusCode == 403 &&
+		strings.Contains(apiErr.Message, "OAuth token has been revoked")
+}
+
+// IsFastModeNotEnabledError checks if error indicates fast mode is not enabled
+func IsFastModeNotEnabledError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.StatusCode == 400 &&
+		strings.Contains(apiErr.Message, "Fast mode is not enabled")
+}
+
+// PromptTooLongError represents a prompt too long error with parsed details
+type PromptTooLongError struct {
+	ActualTokens int
+	LimitTokens  int
+	RawMessage   string
+}
+
+func (e *PromptTooLongError) Error() string {
+	return fmt.Sprintf("prompt is too long: %d tokens > %d maximum", e.ActualTokens, e.LimitTokens)
+}
+
+// ParsePromptTooLongError extracts token counts from a prompt-too-long error
+func ParsePromptTooLongError(err error) *PromptTooLongError {
+	if err == nil {
+		return nil
+	}
+
+	errMsg := err.Error()
+	counts := ParsePromptTooLongTokenCounts(errMsg)
+	if !counts.HasValues {
+		return nil
+	}
+
+	return &PromptTooLongError{
+		ActualTokens: counts.ActualTokens,
+		LimitTokens:  counts.LimitTokens,
+		RawMessage:   errMsg,
+	}
+}
+
+// ClassifyAPIError classifies an API error for analytics tracking
+func ClassifyAPIError(err error) APIErrorClassification {
+	if err == nil {
+		return ClassificationUnknown
+	}
+
+	errMsg := err.Error()
+
+	// Aborted requests
+	if errMsg == "Request was aborted." {
+		return ClassificationAborted
+	}
+
+	// Timeout errors
+	if IsTimeoutError(err) {
+		return ClassificationAPITimeout
+	}
+
+	// Repeated 529 errors
+	if strings.Contains(errMsg, Repeated529Message) {
+		return ClassificationRepeated529
+	}
+
+	// Rate limiting
+	if IsRateLimitError(err) {
+		return ClassificationRateLimit
+	}
+
+	// Server overload (529)
+	if Is529Error(err) {
+		return ClassificationServerOverload
+	}
+
+	// Prompt too long
+	if strings.Contains(strings.ToLower(errMsg), strings.ToLower(PromptTooLongMessage)) || isPromptTooLongMessageText(errMsg) {
+		return ClassificationPromptTooLong
+	}
+
+	// PDF errors
+	if strings.Contains(errMsg, "maximum of") && strings.Contains(errMsg, "PDF pages") {
+		return ClassificationPDFTooLarge
+	}
+	if strings.Contains(errMsg, "password protected") && strings.Contains(errMsg, "PDF") {
+		return ClassificationPDFPasswordProtected
+	}
+
+	// Image size errors
+	if IsMediaSizeError(errMsg) {
+		return ClassificationImageTooLarge
+	}
+
+	// Tool use errors
+	if strings.Contains(errMsg, "tool_use` ids were found without `tool_result`") {
+		return ClassificationToolUseMismatch
+	}
+	if strings.Contains(errMsg, "unexpected `tool_use_id` found in `tool_result`") {
+		return ClassificationUnexpectedToolResult
+	}
+	if strings.Contains(errMsg, "`tool_use` ids must be unique") {
+		return ClassificationDuplicateToolUseID
+	}
+
+	// Invalid model errors
+	if strings.Contains(strings.ToLower(errMsg), "invalid model name") {
+		return ClassificationInvalidModel
+	}
+
+	// Credit/billing errors
+	if strings.Contains(strings.ToLower(errMsg), strings.ToLower(CreditBalanceTooLowMessage)) {
+		return ClassificationCreditBalanceLow
+	}
+
+	// Authentication errors
+	if strings.Contains(strings.ToLower(errMsg), "x-api-key") {
+		return ClassificationInvalidAPIKey
+	}
+	if IsOAuthTokenRevokedError(err) {
+		return ClassificationTokenRevoked
+	}
+	if strings.Contains(errMsg, "OAuth authentication is currently not allowed for this organization") {
+		return ClassificationOAuthOrgNotAllowed
+	}
+	if IsAuthenticationError(err) {
+		return ClassificationAuthError
+	}
+
+	// Status code based fallbacks
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode >= 500 {
+			return ClassificationServerError
+		}
+		if apiErr.StatusCode >= 400 {
+			return ClassificationClientError
+		}
+	}
+
+	// Connection errors - check for SSL/TLS issues first
+	if IsSSLError(err) {
+		return ClassificationSSLCertError
+	}
+	if IsConnectionError(err) {
+		return ClassificationConnectionError
+	}
+
+	return ClassificationUnknown
+}
+
+// CategorizeRetryableAPIError categorizes an error for retry decisions
+func CategorizeRetryableAPIError(err error) string {
+	if Is529Error(err) {
+		return "rate_limit"
+	}
+	if IsRateLimitError(err) {
+		return "rate_limit"
+	}
+	if IsAuthenticationError(err) {
+		return "authentication_failed"
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode >= 408 {
+		return "server_error"
+	}
+	return "unknown"
 }

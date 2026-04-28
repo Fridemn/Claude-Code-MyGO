@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"io"
 
-	"claude-code-go/internal/app"
+	"claude-go/internal/app"
 )
 
 func RunConfig(_ context.Context, application *app.App, stdout io.Writer) error {

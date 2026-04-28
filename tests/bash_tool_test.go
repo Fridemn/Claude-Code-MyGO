@@ -1,7 +1,7 @@
 package tests
 
 import (
-	bashtool "claude-code-go/internal/tool/bash"
+	bashtool "claude-go/internal/tool/bash"
 
 	"context"
 	"path/filepath"
@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 func TestBashToolName(t *testing.T) {

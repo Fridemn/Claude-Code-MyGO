@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"claude-code-go/internal/agent"
-	"claude-code-go/internal/command"
+	"claude-go/internal/agent"
+	"claude-go/internal/command"
+	"claude-go/internal/tool/skill"
 )
 
 type Plugin struct {
@@ -34,10 +35,13 @@ type Plugin struct {
 	SkillsPath   string   `json:"skills_path,omitempty"`
 	Skills       []string `json:"skills,omitempty"`
 	HooksPath    string   `json:"hooks_path,omitempty"`
+	LspServersPath string `json:"lsp_servers_path,omitempty"`
+	LspServers   []string `json:"lsp_servers,omitempty"`
 	CommandCount int      `json:"command_count,omitempty"`
 	AgentCount   int      `json:"agent_count,omitempty"`
 	SkillCount   int      `json:"skill_count,omitempty"`
 	HookCount    int      `json:"hook_count,omitempty"`
+	LspServerCount int    `json:"lsp_server_count,omitempty"`
 }
 
 type PluginCommandMetadata struct {
@@ -60,8 +64,9 @@ type PluginsService struct {
 	plugins       []Plugin
 	commands      []command.Command
 	agents        []agent.Definition
-	skills        []Skill
+	skills        []skill.Skill
 	pluginHooks   []Hook
+	lspServers    []ScopedLspServerConfig
 	path          string
 	lastLoadedAt  time.Time
 	lastLoadError string
@@ -94,6 +99,8 @@ type pluginManifest struct {
 	Skills      string   `json:"skills"`
 	SkillsArr   []string `json:"skills_paths"`
 	Hooks       string   `json:"hooks"`
+	LspServers  string   `json:"lspServers"`
+	LspServersArr []string `json:"lsp_servers_paths"`
 }
 
 func CreatePluginsService(path string) *PluginsService {
@@ -115,7 +122,7 @@ func defaultPlugins() []Plugin {
 			SourceType:  "builtin",
 			Status:      "builtin",
 			Version:     "0.1.0",
-			Description: "Built-in workspace helpers that ship with Claude-Code-Go.",
+			Description: "Built-in workspace helpers that ship with Claude-Go.",
 			Enabled:     true,
 			Category:    "core",
 			Dev:         true,
@@ -176,12 +183,16 @@ func (s *PluginsService) Agents() []agent.Definition {
 	return append([]agent.Definition(nil), s.agents...)
 }
 
-func (s *PluginsService) Skills() []Skill {
-	return append([]Skill(nil), s.skills...)
+func (s *PluginsService) Skills() []skill.Skill {
+	return append([]skill.Skill(nil), s.skills...)
 }
 
 func (s *PluginsService) PluginHooks() []Hook {
 	return append([]Hook(nil), s.pluginHooks...)
+}
+
+func (s *PluginsService) LspServers() []ScopedLspServerConfig {
+	return append([]ScopedLspServerConfig(nil), s.lspServers...)
 }
 
 func (s *PluginsService) DrainNotices() []PluginNotice {
@@ -199,6 +210,7 @@ func (s *PluginsService) Reload() string {
 	s.agents = nil
 	s.skills = nil
 	s.pluginHooks = nil
+	s.lspServers = nil
 	s.lastLoadedAt = time.Time{}
 	s.lastLoadError = ""
 	s.load(s.path)
@@ -215,6 +227,7 @@ func (s *PluginsService) Reset() string {
 	s.agents = nil
 	s.skills = nil
 	s.pluginHooks = nil
+	s.lspServers = nil
 	s.lastLoadedAt = time.Now()
 	s.lastLoadError = ""
 	s.recordEvent("plugins_reset", "")
@@ -303,6 +316,7 @@ func (s *PluginsService) loadComponents() {
 	s.agents = nil
 	s.skills = nil
 	s.pluginHooks = nil
+	s.lspServers = nil
 
 	for i := range s.plugins {
 		plugin := &s.plugins[i]
@@ -318,7 +332,7 @@ func (s *PluginsService) loadComponents() {
 				plugin.Version = builtin.Version
 			}
 			for _, skillDef := range builtin.Skills {
-				s.skills = append(s.skills, Skill{
+				s.skills = append(s.skills, skill.Skill{
 					Name:                   skillDef.Name,
 					DisplayName:            skillDef.Name,
 					Aliases:                append([]string(nil), skillDef.Aliases...),
@@ -385,9 +399,19 @@ func (s *PluginsService) loadComponents() {
 		} else if err != nil {
 			s.lastLoadError = err.Error()
 		}
+		plugin.LspServerCount = 0
+		for _, dir := range s.lspDirs(*plugin) {
+			lspConfigs, err := s.loadPluginLspServersFromDir(*plugin, dir)
+			if err != nil {
+				s.lastLoadError = err.Error()
+				continue
+			}
+			s.lspServers = append(s.lspServers, lspConfigs...)
+			plugin.LspServerCount += len(lspConfigs)
+		}
 
 		switch {
-		case plugin.CommandCount+plugin.SkillCount+plugin.AgentCount+plugin.HookCount > 0:
+		case plugin.CommandCount+plugin.SkillCount+plugin.AgentCount+plugin.HookCount+plugin.LspServerCount > 0:
 			plugin.Status = "loaded"
 		case strings.TrimSpace(plugin.Status) == "":
 			plugin.Status = "registered"
@@ -461,6 +485,12 @@ func (s *PluginsService) loadPluginManifest(plugin *Plugin) {
 	if strings.TrimSpace(manifest.Hooks) != "" {
 		plugin.HooksPath = filepath.Join(root, manifest.Hooks)
 	}
+	if strings.TrimSpace(manifest.LspServers) != "" {
+		plugin.LspServersPath = filepath.Join(root, manifest.LspServers)
+	}
+	if len(manifest.LspServersArr) > 0 {
+		plugin.LspServers = resolveRelativeSlice(root, manifest.LspServersArr)
+	}
 }
 
 func (s *PluginsService) commandDirs(plugin Plugin) []string {
@@ -473,6 +503,10 @@ func (s *PluginsService) skillDirs(plugin Plugin) []string {
 
 func (s *PluginsService) agentDirs(plugin Plugin) []string {
 	return pluginComponentDirs(plugin.Path, plugin.AgentsPath, plugin.Agents, "agents")
+}
+
+func (s *PluginsService) lspDirs(plugin Plugin) []string {
+	return pluginComponentDirs(plugin.Path, plugin.LspServersPath, plugin.LspServers, "lsp")
 }
 
 func (s *PluginsService) loadPluginHooks(plugin Plugin) ([]Hook, error) {
@@ -509,6 +543,97 @@ func (s *PluginsService) loadPluginHooks(plugin Plugin) ([]Hook, error) {
 	return payload.Hooks, nil
 }
 
+func (s *PluginsService) loadPluginLspServersFromDir(plugin Plugin, dir string) ([]ScopedLspServerConfig, error) {
+	// Look for .lsp.json files in the directory
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var configs []ScopedLspServerConfig
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Load .lsp.json files
+		if filepath.Ext(name) == ".json" && strings.Contains(name, "lsp") {
+			path := filepath.Join(dir, name)
+			var serverConfigs map[string]LspServerConfig
+			if err := loadJSONFile(path, &serverConfigs); err != nil {
+				continue
+			}
+			for serverName, config := range serverConfigs {
+				// Resolve environment variables
+				resolved := resolvePluginLspEnvironment(plugin, config)
+				// Add plugin scope prefix and create scoped config
+				_ = fmt.Sprintf("plugin:%s:%s", plugin.Name, serverName) // scoped name for reference
+				configs = append(configs, ScopedLspServerConfig{
+					Command:              resolved.Command,
+					Args:                 resolved.Args,
+					Env:                  resolved.Env,
+					WorkspaceFolder:      resolved.WorkspaceFolder,
+					ExtensionToLanguage:  resolved.ExtensionToLanguage,
+					InitializationOptions: resolved.InitializationOptions,
+					StartupTimeout:       resolved.StartupTimeout,
+					MaxRestarts:          resolved.MaxRestarts,
+				})
+			}
+		}
+	}
+	return configs, nil
+}
+
+// LspServerConfig represents configuration for an LSP server from plugin.
+type LspServerConfig struct {
+	Command              string            `json:"command"`
+	Args                 []string          `json:"args,omitempty"`
+	Env                  map[string]string `json:"env,omitempty"`
+	WorkspaceFolder      string            `json:"workspaceFolder,omitempty"`
+	ExtensionToLanguage  map[string]string `json:"extensionToLanguage"`
+	InitializationOptions interface{}       `json:"initializationOptions,omitempty"`
+	StartupTimeout       int               `json:"startupTimeout,omitempty"`
+	MaxRestarts          int               `json:"maxRestarts,omitempty"`
+}
+
+// resolvePluginLspEnvironment resolves environment variables in LSP config.
+// Ported from src/utils/plugins/lspPluginIntegration.ts:resolvePluginLspEnvironment
+func resolvePluginLspEnvironment(plugin Plugin, config LspServerConfig) LspServerConfig {
+	resolved := config
+
+	// Resolve command if it contains plugin root placeholder
+	if strings.Contains(resolved.Command, "${CLAUDE_PLUGIN_ROOT}") {
+		resolved.Command = strings.ReplaceAll(resolved.Command, "${CLAUDE_PLUGIN_ROOT}", plugin.Path)
+	}
+
+	// Resolve args
+	for i, arg := range resolved.Args {
+		if strings.Contains(arg, "${CLAUDE_PLUGIN_ROOT}") {
+			resolved.Args[i] = strings.ReplaceAll(arg, "${CLAUDE_PLUGIN_ROOT}", plugin.Path)
+		}
+	}
+
+	// Resolve env values
+	for key, value := range resolved.Env {
+		if strings.Contains(value, "${CLAUDE_PLUGIN_ROOT}") {
+			resolved.Env[key] = strings.ReplaceAll(value, "${CLAUDE_PLUGIN_ROOT}", plugin.Path)
+		}
+	}
+
+	// Resolve workspace folder
+	if strings.Contains(resolved.WorkspaceFolder, "${CLAUDE_PLUGIN_ROOT}") {
+		resolved.WorkspaceFolder = strings.ReplaceAll(resolved.WorkspaceFolder, "${CLAUDE_PLUGIN_ROOT}", plugin.Path)
+	}
+	if resolved.WorkspaceFolder == "" {
+		resolved.WorkspaceFolder = plugin.Path
+	}
+
+	return resolved
+}
+
 func (s *PluginsService) persist() {
 	payload := struct {
 		Enabled     bool     `json:"enabled"`
@@ -538,6 +663,7 @@ func (s *PluginsService) Status() string {
 		fmt.Sprintf("loaded_agents=%d", len(s.agents)),
 		fmt.Sprintf("loaded_skills=%d", len(s.skills)),
 		fmt.Sprintf("loaded_hooks=%d", len(s.pluginHooks)),
+		fmt.Sprintf("loaded_lsp_servers=%d", len(s.lspServers)),
 		fmt.Sprintf("config_path=%s", s.path),
 		fmt.Sprintf("last_loaded=%s", formatLoadTime(s.lastLoadedAt)),
 		"reload_supported=full",

@@ -21,4 +21,31 @@ type Config struct {
 
 	// ContextWindowOverride allows overriding the context window size
 	ContextWindowOverride int `json:"context_window_override,omitempty"`
+
+	// EditorMode controls keyboard mode ("normal" or "vim")
+	// Ported from src/utils/config.ts:editorMode
+	EditorMode        string `json:"editor_mode,omitempty"`
+
+	// AgentColor is the color assigned to this agent session
+	// Ported from src/utils/sessionStorage.ts:agentColor
+	AgentColor        string `json:"agent_color,omitempty"`
+}
+
+// Editor mode constants
+const (
+	EditorModeNormal = "normal"
+	EditorModeVim    = "vim"
+)
+
+// Agent color constants
+// Ported from src/tools/AgentTool/agentColorManager.ts:AGENT_COLORS
+var AgentColors = []string{
+	"blue",
+	"green",
+	"yellow",
+	"purple",
+	"red",
+	"orange",
+	"pink",
+	"cyan",
 }

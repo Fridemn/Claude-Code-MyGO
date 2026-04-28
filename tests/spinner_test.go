@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"claude-code-go/internal/ui"
+	"claude-go/internal/ui"
 )
 
 func TestFormatDuration(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // --- GrepTool ---
@@ -29,19 +29,19 @@ const (
 
 // GrepInput represents the input parameters for GrepTool
 type GrepInput struct {
-	Pattern        string
-	Path           string
-	Glob           string
-	Type           string
-	OutputMode     GrepOutputMode
-	ContextBefore  int
-	ContextAfter   int
-	Context        int
+	Pattern         string
+	Path            string
+	Glob            string
+	Type            string
+	OutputMode      GrepOutputMode
+	ContextBefore   int
+	ContextAfter    int
+	Context         int
 	ShowLineNumbers bool
 	CaseInsensitive bool
-	HeadLimit      int
-	Offset         int
-	Multiline      bool
+	HeadLimit       int
+	Offset          int
+	Multiline       bool
 }
 
 // GrepOutput represents the output of GrepTool
@@ -84,20 +84,20 @@ func (GrepTool) IsSearchOrReadCommand(in tool.Input) tool.SearchOrReadResult {
 
 func (GrepTool) ParametersSchema() map[string]any {
 	return tool.SchemaObject(map[string]any{
-		"pattern":      tool.SchemaString("The regular expression pattern to search for in file contents"),
-		"path":         tool.SchemaString("File or directory to search in. Defaults to current working directory."),
-		"glob":         tool.SchemaString("Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\")"),
-		"output_mode":  tool.SchemaEnumString("Output mode: \"content\" shows matching lines, \"files_with_matches\" shows file paths, \"count\" shows match counts. Defaults to \"files_with_matches\".", "content", "files_with_matches", "count"),
-		"-B":           tool.SchemaInteger("Number of lines to show before each match. Requires output_mode: \"content\"."),
-		"-A":           tool.SchemaInteger("Number of lines to show after each match. Requires output_mode: \"content\"."),
-		"-C":           tool.SchemaInteger("Alias for context. Number of lines to show before and after each match."),
-		"context":      tool.SchemaInteger("Number of lines to show before and after each match. Requires output_mode: \"content\"."),
-		"-n":           tool.SchemaBoolean("Show line numbers in output. Defaults to true for content mode."),
-		"-i":           tool.SchemaBoolean("Case insensitive search"),
-		"type":         tool.SchemaString("File type to search (e.g. \"js\", \"py\", \"rust\", \"go\")"),
-		"head_limit":   tool.SchemaInteger("Limit output to first N lines/entries. Defaults to 250. Pass 0 for unlimited."),
-		"offset":       tool.SchemaInteger("Skip first N lines/entries before applying head_limit. Defaults to 0."),
-		"multiline":    tool.SchemaBoolean("Enable multiline mode where . matches newlines. Default: false."),
+		"pattern":     tool.SchemaString("The regular expression pattern to search for in file contents"),
+		"path":        tool.SchemaString("File or directory to search in. Defaults to current working directory."),
+		"glob":        tool.SchemaString("Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\")"),
+		"output_mode": tool.SchemaEnumString("Output mode: \"content\" shows matching lines, \"files_with_matches\" shows file paths, \"count\" shows match counts. Defaults to \"files_with_matches\".", "content", "files_with_matches", "count"),
+		"-B":          tool.SchemaInteger("Number of lines to show before each match. Requires output_mode: \"content\"."),
+		"-A":          tool.SchemaInteger("Number of lines to show after each match. Requires output_mode: \"content\"."),
+		"-C":          tool.SchemaInteger("Alias for context. Number of lines to show before and after each match."),
+		"context":     tool.SchemaInteger("Number of lines to show before and after each match. Requires output_mode: \"content\"."),
+		"-n":          tool.SchemaBoolean("Show line numbers in output. Defaults to true for content mode."),
+		"-i":          tool.SchemaBoolean("Case insensitive search"),
+		"type":        tool.SchemaString("File type to search (e.g. \"js\", \"py\", \"rust\", \"go\")"),
+		"head_limit":  tool.SchemaInteger("Limit output to first N lines/entries. Defaults to 250. Pass 0 for unlimited."),
+		"offset":      tool.SchemaInteger("Skip first N lines/entries before applying head_limit. Defaults to 0."),
+		"multiline":   tool.SchemaBoolean("Enable multiline mode where . matches newlines. Default: false."),
 	}, "pattern")
 }
 
@@ -246,11 +246,11 @@ func (GrepTool) Call(ctx context.Context, in tool.Input, runtime tool.Runtime) (
 			}
 		}
 		output = GrepOutput{
-			Mode:        GrepModeCount,
-			Content:     strings.Join(limitedCount.items, "\n"),
-			NumMatches:  totalMatches,
-			NumFiles:    fileCount,
-			Filenames:   []string{},
+			Mode:       GrepModeCount,
+			Content:    strings.Join(limitedCount.items, "\n"),
+			NumMatches: totalMatches,
+			NumFiles:   fileCount,
+			Filenames:  []string{},
 		}
 		if limitedCount.applied {
 			output.AppliedLimit = headLimit
@@ -614,14 +614,27 @@ type GlobOutput struct {
 }
 
 func (GlobTool) Call(ctx context.Context, in tool.Input, runtime tool.Runtime) (tool.Result, error) {
-	pattern := tool.GetString(in, "pattern")
+	pattern := strings.TrimSpace(tool.GetString(in, "pattern"))
 	path := tool.GetString(in, "path")
 
-	if strings.TrimSpace(pattern) == "" {
+	if pattern == "" {
 		return tool.Result{}, fmt.Errorf("pattern is required")
 	}
 
 	start := time.Now()
+
+	// Handle absolute, exact file paths directly to avoid false negatives when
+	// the caller passes an absolute path as pattern (e.g. "/tmp/a.json").
+	if filepath.IsAbs(pattern) && !isGlobPattern(pattern) {
+		files, err := resolveExactGlobPath(pattern)
+		if err != nil {
+			return tool.Result{}, err
+		}
+		if len(files) == 0 {
+			return tool.Result{Content: "No files found"}, nil
+		}
+		return buildGlobResult(files, start, false), nil
+	}
 
 	// Use current working directory if path not specified
 	searchPath := path
@@ -633,6 +646,16 @@ func (GlobTool) Call(ctx context.Context, in tool.Input, runtime tool.Runtime) (
 		}
 	}
 	searchPath = cleanToolPath(searchPath)
+
+	// If caller omitted path and used an absolute glob pattern (e.g.
+	// "/tmp/*.json"), derive search root from the literal prefix so the pattern
+	// can match instead of being interpreted relative to CWD.
+	if strings.TrimSpace(path) == "" {
+		if derivedRoot, relativePattern, ok := deriveSearchRootFromAbsolutePattern(pattern); ok {
+			searchPath = derivedRoot
+			pattern = relativePattern
+		}
+	}
 
 	// Limit results to 100 by default (matches TS implementation)
 	limit := 100
@@ -697,39 +720,16 @@ func (GlobTool) Call(ctx context.Context, in tool.Input, runtime tool.Runtime) (
 	if len(files) == 0 {
 		return tool.Result{Content: "No files found"}, nil
 	}
-
-	output := GlobOutput{
-		Filenames:  files,
-		NumFiles:   len(files),
-		DurationMs: time.Since(start).Milliseconds(),
-		Truncated:  truncated,
-	}
-
-	// Format output as text
-	var content strings.Builder
-	for _, f := range files {
-		content.WriteString(f)
-		content.WriteString("\n")
-	}
-	if truncated {
-		content.WriteString("(Results are truncated. Consider using a more specific path or pattern.)\n")
-	}
-
-	return tool.Result{Content: content.String(), Meta: map[string]any{
-		"filenames":  output.Filenames,
-		"numFiles":   output.NumFiles,
-		"durationMs": output.DurationMs,
-		"truncated":  output.Truncated,
-	}}, nil
+	return buildGlobResult(files, start, truncated), nil
 }
 
 // --- Glob Matcher Helpers ---
 // Supports both simple patterns (*.go) and double-star patterns (**/*.go)
 
 type globMatcher struct {
-	pattern      string
+	pattern       string
 	hasDoubleStar bool
-	regex        *regexp.Regexp
+	regex         *regexp.Regexp
 }
 
 func parseGlobPatterns(globStr string) []string {
@@ -823,6 +823,77 @@ func globToRegex(pattern string) string {
 
 	result.WriteString("$")
 	return result.String()
+}
+
+func isGlobPattern(pattern string) bool {
+	return strings.ContainsAny(pattern, "*?[")
+}
+
+func resolveExactGlobPath(pattern string) ([]string, error) {
+	cleaned := cleanToolPath(pattern)
+	info, err := os.Stat(cleaned)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, nil
+	}
+	return []string{cleaned}, nil
+}
+
+func deriveSearchRootFromAbsolutePattern(pattern string) (searchRoot, relativePattern string, ok bool) {
+	if !filepath.IsAbs(pattern) || !isGlobPattern(pattern) {
+		return "", "", false
+	}
+
+	firstGlobIdx := strings.IndexAny(pattern, "*?[")
+	if firstGlobIdx <= 0 {
+		return "", "", false
+	}
+
+	literalPrefix := pattern[:firstGlobIdx]
+	root := filepath.Clean(filepath.Dir(literalPrefix))
+	if root == "" {
+		root = string(filepath.Separator)
+	}
+
+	rel, err := filepath.Rel(root, pattern)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", "", false
+	}
+
+	return root, filepath.ToSlash(rel), true
+}
+
+func buildGlobResult(files []string, start time.Time, truncated bool) tool.Result {
+	output := GlobOutput{
+		Filenames:  files,
+		NumFiles:   len(files),
+		DurationMs: time.Since(start).Milliseconds(),
+		Truncated:  truncated,
+	}
+
+	var content strings.Builder
+	for _, f := range files {
+		content.WriteString(f)
+		content.WriteString("\n")
+	}
+	if truncated {
+		content.WriteString("(Results are truncated. Consider using a more specific path or pattern.)\n")
+	}
+
+	return tool.Result{
+		Content: content.String(),
+		Meta: map[string]any{
+			"filenames":  output.Filenames,
+			"numFiles":   output.NumFiles,
+			"durationMs": output.DurationMs,
+			"truncated":  output.Truncated,
+		},
+	}
 }
 
 // cleanToolPath cleans and normalizes a path

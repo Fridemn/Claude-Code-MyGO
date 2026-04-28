@@ -3,9 +3,10 @@ package command
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // FormatCommandUsage returns a usage string for a command
@@ -84,3 +85,12 @@ func callNamedTool(ctx context.Context, tools *tool.Registry, name string, input
 
 // stringifyToolContent is an alias for backward compatibility
 func stringifyToolContent(content any) string { return StringifyToolContent(content) }
+
+// GetHomeDir returns the user's home directory
+func GetHomeDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return home, nil
+}

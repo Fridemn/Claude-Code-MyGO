@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-code-go/internal/agent"
-	"claude-code-go/internal/command"
+	"claude-go/internal/agent"
+	"claude-go/internal/command"
 )
 
 func registerAgentCommands(r *command.Registry) {

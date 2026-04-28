@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 func registerMCPCommands(r *command.Registry) {
@@ -15,6 +15,7 @@ func registerMCPCommands(r *command.Registry) {
 		Type:        command.KindLocalJSX,
 		Name:        "permissions",
 		Description: "show current permission mode and command policy status",
+		Load:        loadPermissionsModel,
 		Handler: func(_ context.Context, runtime command.Runtime, _ []string) (string, error) {
 			lines := []string{
 				"mode=workspace-write",
@@ -37,6 +38,7 @@ func registerMCPCommands(r *command.Registry) {
 		Type:        command.KindLocalJSX,
 		Name:        "theme",
 		Description: "show current terminal theme configuration",
+		Load:        loadThemeModel,
 		Handler: func(_ context.Context, runtime command.Runtime, _ []string) (string, error) {
 			lines := []string{
 				"name=claude-code-dark",
@@ -185,6 +187,7 @@ func registerMCPCommands(r *command.Registry) {
 		Type:        command.KindLocalJSX,
 		Name:        "mcp",
 		Description: "show MCP subsystem status",
+		Load:        loadMCPModel,
 		Handler: func(_ context.Context, runtime command.Runtime, _ []string) (string, error) {
 			return renderMCPOverview(runtime), nil
 		},

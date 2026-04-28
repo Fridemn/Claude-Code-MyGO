@@ -31,7 +31,7 @@ func validatePowerShellSecurity(command string) error {
 	case PSSecurityLevelDeny:
 		return fmt.Errorf("command blocked: %s", result.Message)
 	case PSSecurityLevelAsk:
-		return fmt.Errorf("security warning: %s", result.Message)
+		return fmt.Errorf("permission required: %s", result.Message)
 	default:
 		return nil
 	}

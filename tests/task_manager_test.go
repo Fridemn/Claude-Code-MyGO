@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"claude-code-go/internal/task"
-	"claude-code-go/internal/types"
+	"claude-go/internal/task"
+	"claude-go/internal/types"
 )
 
 func TestTaskManagerLifecycleAndNotices(t *testing.T) {

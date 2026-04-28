@@ -1,7 +1,7 @@
 package meta
 
 import (
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 // Register registers all meta commands with the registry

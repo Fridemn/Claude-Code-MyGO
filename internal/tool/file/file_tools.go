@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // ListFilesTool lists files in a directory (kept for backward compatibility)

@@ -1,7 +1,7 @@
 package plan
 
 import (
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // RegisterPlanTools registers plan mode tools to the given registry

@@ -5,8 +5,13 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
+
+// Register registers the help command with the registry.
+func Register(r *command.Registry) {
+	r.Register(Command())
+}
 
 // Command returns the help command definition
 func Command() command.LocalJSXCommand {

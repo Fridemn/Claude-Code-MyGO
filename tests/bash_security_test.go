@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"claude-code-go/internal/tool/bash"
+	"claude-go/internal/tool/bash"
 )
 
 func TestSecurityValidatorDetectsDangerousPatterns(t *testing.T) {

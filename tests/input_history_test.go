@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"claude-code-go/internal/ui/input"
+	"claude-go/internal/ui/input"
 )
 
 func TestPromptInputHistoryPrevNext(t *testing.T) {

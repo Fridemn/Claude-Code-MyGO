@@ -5,7 +5,8 @@ import (
 	"regexp"
 	"strings"
 
-	"claude-code-go/internal/ui/components"
+	"claude-go/internal/ui/components"
+	"claude-go/internal/ui/paste"
 )
 
 // InputState represents the state of a text input
@@ -165,6 +166,8 @@ type PromptInputState struct {
 	History            []string
 	HistoryIndex       int // -1 means editing current draft
 	historyDraft       string
+	// Paste support
+	PasteManager *paste.Manager
 }
 
 // PromptInputState creates a new prompt input state
@@ -482,4 +485,50 @@ func renderInlineHighlights(text string) string {
 		}
 		return token
 	})
+}
+
+// Paste support methods
+
+// ensurePasteManager initializes the paste manager if needed.
+func (s *PromptInputState) ensurePasteManager() {
+	if s.PasteManager == nil {
+		s.PasteManager = paste.NewManager()
+	}
+}
+
+// HandlePaste handles pasted text, returning the text to insert.
+// For short text (< PasteThreshold), returns the text as-is.
+// For long text, stores it and returns a collapsed reference.
+func (s *PromptInputState) HandlePaste(text string) string {
+	s.ensurePasteManager()
+	return s.PasteManager.AddPaste(text)
+}
+
+// ExpandInput expands all paste references in the current input value.
+func (s *PromptInputState) ExpandInput() string {
+	if s.PasteManager == nil {
+		return s.Value
+	}
+	return s.PasteManager.ExpandInput(s.Value)
+}
+
+// ClearPastes clears all stored paste content.
+func (s *PromptInputState) ClearPastes() {
+	if s.PasteManager != nil {
+		s.PasteManager.Clear()
+	}
+}
+
+// GetPastedContent returns the stored paste content for a given ID.
+func (s *PromptInputState) GetPastedContent(id int) *paste.PastedContent {
+	if s.PasteManager == nil {
+		return nil
+	}
+	return s.PasteManager.GetContent(id)
+}
+
+// GetPasteManager returns the paste manager, initializing if needed.
+func (s *PromptInputState) GetPasteManager() *paste.Manager {
+	s.ensurePasteManager()
+	return s.PasteManager
 }

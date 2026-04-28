@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // ListMcpResourcesTool implements listing MCP resources

@@ -4,84 +4,101 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-code-go/internal/tool"
-	"claude-code-go/internal/ui"
+	"claude-go/internal/tool"
+	"claude-go/internal/ui"
 )
 
-// GroupToolUses groups consecutive tool uses of the same type from the same assistant message
-// Matches TS logic from src/utils/groupToolUses.ts
+// GroupToolUses matches TS applyGrouping behavior:
+// - group by assistant message id + tool name
+// - only emit grouped entries for groups with 2+ tool uses
+// - emit each group once at first occurrence order
+// - suppress grouped tool_result rows
 func GroupToolUses(entries []ui.TranscriptEntry, tools *tool.Registry, verbose bool) []ui.TranscriptEntry {
 	if verbose {
-		// Skip grouping in verbose mode
-		// Evidence: src/utils/groupToolUses.ts:52-64
+		// Evidence: src/utils/groupToolUses.ts:59-64
 		return entries
 	}
 
-	result := make([]ui.TranscriptEntry, 0, len(entries))
+	// First pass: collect tool_use groups keyed by messageID:toolName.
 	groups := make(map[string][]ui.TranscriptEntry)
-	currentMessageID := ""
-
-	flushGroups := func() {
-		for _, group := range groups {
-			if len(group) < 2 {
-				// Single item - don't group (need 2+ for grouping)
-				// Evidence: src/utils/groupToolUses.ts:82-85
-				for _, entry := range group {
-					result = append(result, entry)
-				}
-			} else {
-				// Multiple items - create grouped entry
-				// Evidence: src/utils/groupToolUses.ts:86-94
-				result = append(result, ui.TranscriptEntry{
-					Kind:     "grouped_tool_use",
-					Title:    group[0].ToolName,
-					Content:  fmt.Sprintf("%d operations", len(group)),
-					UUID:     group[0].UUID + "-group",
-					ToolName: group[0].ToolName,
-					Meta: ui.EntryMeta{
-						GroupMessages: group,
-					},
-				})
-			}
-		}
-		groups = make(map[string][]ui.TranscriptEntry)
-	}
-
 	for _, entry := range entries {
-		// Non-tool entries break groups
-		if entry.Kind != "tool_use" {
-			flushGroups()
-			currentMessageID = ""
-			result = append(result, entry)
+		key, ok := groupKeyForToolUse(entry, tools)
+		if !ok {
 			continue
 		}
-
-		// Extract message ID from UUID (format: "msg-X-tool-Y")
-		messageID := extractMessageID(entry.UUID)
-
-		// Different message breaks groups
-		// Evidence: src/utils/groupToolUses.ts:67-80 (grouping by message.id + toolName)
-		if messageID != currentMessageID {
-			flushGroups()
-			currentMessageID = messageID
-		}
-
-		// Check if tool supports grouping
-		// Evidence: src/utils/groupToolUses.ts:19-31
-		if !supportsGrouping(entry.ToolName, tools) {
-			result = append(result, entry)
-			continue
-		}
-
-		// Add to group (key = messageID:toolName)
-		key := messageID + ":" + entry.ToolName
 		groups[key] = append(groups[key], entry)
 	}
 
-	// Flush remaining groups
-	flushGroups()
+	// Keep only valid groups (2+) and collect grouped tool IDs.
+	validGroups := make(map[string][]ui.TranscriptEntry)
+	groupedToolUseIDs := make(map[string]bool)
+	for key, group := range groups {
+		if len(group) < 2 {
+			continue
+		}
+		validGroups[key] = group
+		for _, e := range group {
+			if e.ToolUseID != "" {
+				groupedToolUseIDs[e.ToolUseID] = true
+			}
+		}
+	}
+
+	// Second pass: preserve original order; emit each group once.
+	result := make([]ui.TranscriptEntry, 0, len(entries))
+	emittedGroups := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.Kind == "tool_use" {
+			key, ok := groupKeyForToolUse(entry, tools)
+			if ok {
+				group := validGroups[key]
+				if len(group) >= 2 {
+					if !emittedGroups[key] {
+						emittedGroups[key] = true
+						first := group[0]
+						isActive := false
+						for _, g := range group {
+							if g.IsActive {
+								isActive = true
+								break
+							}
+						}
+						result = append(result, ui.TranscriptEntry{
+							Kind:      "grouped_tool_use",
+							Title:     first.ToolName,
+							Content:   fmt.Sprintf("%d operations", len(group)),
+							UUID:      "grouped-" + first.UUID,
+							ToolName:  first.ToolName,
+							IsActive:  isActive,
+							Timestamp: first.Timestamp,
+							Meta: ui.EntryMeta{
+								GroupMessages: group,
+							},
+						})
+					}
+					continue
+				}
+			}
+			result = append(result, entry)
+			continue
+		}
+
+		// Suppress grouped tool_result entries.
+		if entry.Kind == "tool_result" && entry.ToolUseID != "" && groupedToolUseIDs[entry.ToolUseID] {
+			continue
+		}
+		result = append(result, entry)
+	}
 
 	return result
+}
+
+func groupKeyForToolUse(entry ui.TranscriptEntry, tools *tool.Registry) (string, bool) {
+	if entry.Kind != "tool_use" || entry.ToolName == "" || !supportsGrouping(entry.ToolName, tools) {
+		return "", false
+	}
+	messageID := extractMessageID(entry.UUID)
+	return messageID + ":" + entry.ToolName, true
 }
 
 // extractMessageID extracts the base message ID from a tool UUID
@@ -98,12 +115,20 @@ func extractMessageID(uuid string) string {
 // In TS, this checks for renderGroupedToolUse implementation
 // Evidence: src/utils/groupToolUses.ts:19-31
 func supportsGrouping(toolName string, tools *tool.Registry) bool {
-	// TODO: This should check if tool implements a GroupingSupport interface
-	// For now, use an allowlist of known groupable tools
+	// TS checks dynamic tool capability (renderGroupedToolUse).
+	// Go migration uses runtime capability first, with a minimal explicit fallback.
+	if tools != nil {
+		if t, ok := tools.Get(toolName); ok {
+			if classifier, ok := t.(SearchOrReadClassifier); ok {
+				if classifier.IsSearchOrReadCommand(tool.Input{}).IsCollapsible {
+					return true
+				}
+			}
+		}
+	}
+
 	switch toolName {
-	case "FileRead", "FileSearch", "FileList",
-		"MemoryRead", "MemorySearch",
-		"MCPCall":
+	case "Agent":
 		return true
 	default:
 		return false

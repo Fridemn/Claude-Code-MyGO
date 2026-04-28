@@ -11,10 +11,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
-	"claude-code-go/internal/engine"
-	"claude-code-go/internal/tool"
-	"claude-code-go/internal/types"
+	"claude-go/internal/engine"
+	"claude-go/internal/tool"
+	"claude-go/internal/types"
 )
 
 // Complete implements engine.Provider interface
@@ -116,8 +117,12 @@ func (c *OpenAICompatibleClient) CompleteStream(ctx context.Context, req engine.
 }
 
 // doComplete performs the actual completion (internal method) with enhanced retry
+// Handles context overflow errors by adjusting max_tokens and retrying
 func (c *OpenAICompatibleClient) doComplete(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
 	req.Stream = false
+
+	// Store original max_tokens for context overflow recovery
+	originalMaxTokens := req.MaxTokens
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -130,8 +135,51 @@ func (c *OpenAICompatibleClient) doComplete(ctx context.Context, req ChatComplet
 		cfg.BaseDelay = c.retryDelay
 	}
 
-	return RetryWithResult(ctx, cfg, func() (*ChatCompletionResponse, error) {
-		return c.executeRequest(ctx, body)
+	var adjustedMaxTokens *int
+
+	return RetryWithCallback(ctx, cfg, func() (*ChatCompletionResponse, error) {
+		// If we have an adjusted max_tokens from a previous context overflow, use it
+		if adjustedMaxTokens != nil {
+			req.MaxTokens = adjustedMaxTokens
+			var err error
+			body, err = json.Marshal(req)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		resp, err := c.executeRequest(ctx, body)
+		if err != nil {
+			// Check for context overflow error
+			if overflow := ParseContextOverflowError(err); overflow != nil {
+				// Calculate adjusted max_tokens
+				// For now, use a reasonable default (can be enhanced with thinking config)
+				newMaxTokens := CalculateAdjustedMaxTokens(overflow, 0)
+
+				// Make sure we have room for at least some output
+				if newMaxTokens < 100 {
+					// Not enough room, propagate the error
+					return nil, err
+				}
+
+				adjustedMaxTokens = &newMaxTokens
+				// Return the error so retry logic kicks in
+				return nil, err
+			}
+
+			// For other errors, reset adjustedMaxTokens if retry succeeds later
+			return nil, err
+		}
+
+		// Success - reset adjustedMaxTokens for future calls
+		req.MaxTokens = originalMaxTokens
+		adjustedMaxTokens = nil
+		return resp, nil
+	}, func(attempt int, err error, delay time.Duration) {
+		if overflow := ParseContextOverflowError(err); overflow != nil {
+			// Log context overflow adjustment for debugging
+			// This could be integrated with a proper logging system
+		}
 	})
 }
 
@@ -150,6 +198,36 @@ func (c *OpenAICompatibleClient) executeRequest(ctx context.Context, body []byte
 	return &response, nil
 }
 
+// GenerateSummary implements services.SummaryProvider interface.
+// It sends a prompt to the LLM and returns the generated summary text.
+// Used by compact service to generate conversation summaries.
+func (c *OpenAICompatibleClient) GenerateSummary(ctx context.Context, prompt string) (string, error) {
+	maxTokens := 4096
+	req := ChatCompletionRequest{
+		Model: c.model,
+		Messages: []ChatMessage{
+			{Role: "user", Content: prompt},
+		},
+		MaxTokens: &maxTokens,
+	}
+
+	resp, err := c.doComplete(ctx, req)
+	if err != nil {
+		return "", err
+	}
+
+	if len(resp.Choices) == 0 || resp.Choices[0].Message == nil {
+		return "", fmt.Errorf("no response from model")
+	}
+
+	content, ok := resp.Choices[0].Message.Content.(string)
+	if !ok {
+		return "", fmt.Errorf("unexpected response content type")
+	}
+
+	return content, nil
+}
+
 // Chat performs a chat completion (public API)
 func (c *OpenAICompatibleClient) Chat(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
 	return c.doComplete(ctx, req)
@@ -161,8 +239,12 @@ func (c *OpenAICompatibleClient) ChatStream(ctx context.Context, req ChatComplet
 }
 
 // doCompleteStream performs streaming completion (internal method) with enhanced retry
+// Handles context overflow errors by adjusting max_tokens and retrying
 func (c *OpenAICompatibleClient) doCompleteStream(ctx context.Context, req ChatCompletionRequest, onChunk func(chunk *StreamChunk) error) (*ChatCompletionResponse, error) {
 	req.Stream = true
+
+	// Store original max_tokens for context overflow recovery
+	originalMaxTokens := req.MaxTokens
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -175,9 +257,48 @@ func (c *OpenAICompatibleClient) doCompleteStream(ctx context.Context, req ChatC
 		cfg.BaseDelay = c.retryDelay
 	}
 
-	return RetryWithResult(ctx, cfg, func() (*ChatCompletionResponse, error) {
-		return c.tryCompleteStream(ctx, body, onChunk)
+	var adjustedMaxTokens *int
+
+	result, err := RetryWithCallback(ctx, cfg, func() (*ChatCompletionResponse, error) {
+		// If we have an adjusted max_tokens from a previous context overflow, use it
+		if adjustedMaxTokens != nil {
+			req.MaxTokens = adjustedMaxTokens
+			body, err = json.Marshal(req)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		resp, err := c.tryCompleteStream(ctx, body, onChunk)
+		if err != nil {
+			// Check for context overflow error
+			if overflow := ParseContextOverflowError(err); overflow != nil {
+				// Calculate adjusted max_tokens
+				newMaxTokens := CalculateAdjustedMaxTokens(overflow, 0)
+
+				// Make sure we have room for at least some output
+				if newMaxTokens < 100 {
+					return nil, err
+				}
+
+				adjustedMaxTokens = &newMaxTokens
+				return nil, err
+			}
+
+			return nil, err
+		}
+
+		// Success - reset adjustedMaxTokens for future calls
+		req.MaxTokens = originalMaxTokens
+		adjustedMaxTokens = nil
+		return resp, nil
+	}, func(attempt int, err error, delay time.Duration) {
+		if overflow := ParseContextOverflowError(err); overflow != nil {
+			// Log context overflow adjustment for debugging
+		}
 	})
+
+	return result, err
 }
 
 // tryCompleteStream attempts a streaming request
@@ -371,12 +492,36 @@ func buildTypesToolCalls(resp *ChatCompletionResponse) []types.ToolCall {
 	}
 
 	out := make([]types.ToolCall, 0, len(resp.Choices[0].Message.ToolCalls))
+	lastNamedIdx := -1
 	for _, tc := range resp.Choices[0].Message.ToolCalls {
+		name := strings.TrimSpace(tc.Function.Name)
+		args := types.NormalizeObjectRawMessage(json.RawMessage(tc.Function.Arguments))
+
+		// Some OpenAI-compatible providers may emit a malformed extra tool_call
+		// chunk with empty name but valid arguments. Merge it into the most
+		// recent named call when possible.
+		if name == "" {
+			if lastNamedIdx >= 0 && string(args) != "{}" {
+				prevArgs := string(out[lastNamedIdx].Arguments)
+				if prevArgs == "" || prevArgs == "{}" {
+					out[lastNamedIdx].Arguments = args
+				}
+				if strings.TrimSpace(out[lastNamedIdx].ID) == "" && strings.TrimSpace(tc.ID) != "" {
+					out[lastNamedIdx].ID = tc.ID
+				}
+			}
+			continue
+		}
+
 		out = append(out, types.ToolCall{
 			ID:        tc.ID,
-			Name:      tc.Function.Name,
-			Arguments: tc.Function.Arguments,
+			Name:      name,
+			Arguments: args,
 		})
+		lastNamedIdx = len(out) - 1
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -396,6 +541,17 @@ func mergeToolCalls(existing []ToolCall, deltas []ToolCall) []ToolCall {
 		} else if delta.ID != "" {
 			for i := range existing {
 				if existing[i].ID == delta.ID {
+					target = i
+					break
+				}
+			}
+		}
+		if target == -1 && delta.Function.Name == "" && strings.TrimSpace(delta.Function.Arguments) != "" && len(existing) > 0 {
+			for i := len(existing) - 1; i >= 0; i-- {
+				if strings.TrimSpace(existing[i].Function.Name) == "" {
+					continue
+				}
+				if strings.TrimSpace(existing[i].Function.Arguments) == "" {
 					target = i
 					break
 				}
@@ -437,7 +593,29 @@ func firstNonEmptyString(values ...string) string {
 // BuildMessagesFromTypes converts types.Message slice to ChatMessage slice
 func BuildMessagesFromTypes(messages []types.Message) []ChatMessage {
 	result := make([]ChatMessage, 0, len(messages))
+	validToolCallIDs := make(map[string]struct{})
 	for _, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.Type), types.MessageTypeProgress) ||
+			strings.EqualFold(strings.TrimSpace(msg.Role), types.MessageTypeProgress) {
+			continue
+		}
+		if msg.IsVisibleInTranscriptOnly {
+			continue
+		}
+		if msg.Role == types.RoleSystem && strings.EqualFold(strings.TrimSpace(msg.Type), types.SystemSubtypeLocalCommand) {
+			continue
+		}
+
+		toolCallID := strings.TrimSpace(msg.ToolCallID)
+		if msg.Role == types.RoleTool {
+			if toolCallID == "" {
+				continue
+			}
+			if _, ok := validToolCallIDs[toolCallID]; !ok {
+				continue
+			}
+		}
+
 		chatMsg := ChatMessage{
 			Role: msg.Role,
 		}
@@ -465,22 +643,31 @@ func BuildMessagesFromTypes(messages []types.Message) []ChatMessage {
 
 		// Handle tool calls
 		if len(msg.ToolCalls) > 0 {
-			chatMsg.ToolCalls = make([]ToolCall, len(msg.ToolCalls))
-			for i, tc := range msg.ToolCalls {
-				chatMsg.ToolCalls[i] = ToolCall{
-					ID:   tc.ID,
+			filteredCalls := make([]ToolCall, 0, len(msg.ToolCalls))
+			for _, tc := range msg.ToolCalls {
+				name := strings.TrimSpace(tc.Name)
+				id := strings.TrimSpace(tc.ID)
+				if name == "" || id == "" {
+					continue
+				}
+				filteredCalls = append(filteredCalls, ToolCall{
+					ID:   id,
 					Type: "function",
 					Function: FunctionCallData{
-						Name:      tc.Name,
-						Arguments: tc.Arguments,
+						Name:      name,
+						Arguments: string(types.NormalizeObjectRawMessage(tc.Arguments)),
 					},
-				}
+				})
+				validToolCallIDs[id] = struct{}{}
+			}
+			if len(filteredCalls) > 0 {
+				chatMsg.ToolCalls = filteredCalls
 			}
 		}
 
 		// Handle tool results
-		if msg.ToolCallID != "" {
-			chatMsg.ToolCallID = msg.ToolCallID
+		if toolCallID != "" {
+			chatMsg.ToolCallID = toolCallID
 		}
 
 		if msg.Name != "" {
@@ -501,7 +688,7 @@ func BuildToolsFromTypes(tools []types.ToolDefinition) []ToolDefinition {
 			Function: FunctionDefinition{
 				Name:        t.Name,
 				Description: t.Description,
-				Parameters:  t.Parameters,
+				Parameters:  t.InputSchema,
 			},
 		})
 	}

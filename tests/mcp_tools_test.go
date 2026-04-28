@@ -1,13 +1,13 @@
 package tests
 
 import (
-	"claude-code-go/internal/infra/mcp"
-	mcptool "claude-code-go/internal/tool/mcp"
+	"claude-go/internal/infra/mcp"
+	mcptool "claude-go/internal/tool/mcp"
 
 	"context"
 	"testing"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 func TestMCPToolsValidateInputsAndCallRuntime(t *testing.T) {

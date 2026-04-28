@@ -9,8 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	"claude-code-go/internal/agent"
-	"claude-code-go/internal/command"
+	"claude-go/internal/agent"
+	"claude-go/internal/command"
+	"claude-go/internal/tool/skill"
 )
 
 type markdownFrontmatter map[string]string
@@ -194,12 +195,12 @@ func makePromptHandler(body, baseDir string) command.Handler {
 	}
 }
 
-func loadSkillEntriesFromDir(root, source, loadedFrom, pluginName string) ([]Skill, error) {
+func loadSkillEntriesFromDir(root, source, loadedFrom, pluginName string) ([]skill.Skill, error) {
 	files, err := walkMarkdownFiles(root, true)
 	if err != nil {
 		return nil, err
 	}
-	var skills []Skill
+	var skills []skill.Skill
 	for _, file := range files {
 		raw, err := os.ReadFile(file)
 		if err != nil {
@@ -216,7 +217,7 @@ func loadSkillEntriesFromDir(root, source, loadedFrom, pluginName string) ([]Ski
 		}
 		displayName := frontmatterString(fm, "name")
 		aliases := frontmatterList(fm, "aliases")
-		skills = append(skills, Skill{
+		skills = append(skills, skill.Skill{
 			Name:                   name,
 			DisplayName:            displayName,
 			Aliases:                aliases,
@@ -240,7 +241,7 @@ func loadSkillEntriesFromDir(root, source, loadedFrom, pluginName string) ([]Ski
 	return skills, nil
 }
 
-func buildCommandsFromSkills(skills []Skill) []command.Command {
+func buildCommandsFromSkills(skills []skill.Skill) []command.Command {
 	out := make([]command.Command, 0, len(skills))
 	for _, skill := range skills {
 		if !skill.UserInvocable {

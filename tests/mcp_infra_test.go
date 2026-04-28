@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	mcpinfra "claude-code-go/internal/infra/mcp"
+	mcpinfra "claude-go/internal/infra/mcp"
 )
 
 func TestMCPConnectionManager_AuthConnectPingAndTemplateRead(t *testing.T) {

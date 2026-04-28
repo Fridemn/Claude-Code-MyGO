@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	mcpinfra "claude-code-go/internal/infra/mcp"
+	mcpinfra "claude-go/internal/infra/mcp"
 )
 
 type MCPServer = mcpinfra.ServerConfig
@@ -39,29 +39,7 @@ func CreateMCPService(path string) *MCPService {
 }
 
 func defaultMCPServers() []MCPServer {
-	return []MCPServer{
-		{
-			Name:          "local-workspace",
-			Transport:     mcpinfra.TransportSDK,
-			Status:        "configured",
-			ToolCount:     2,
-			ResourceCount: 2,
-			Description:   "Default local MCP workspace server.",
-			Enabled:       true,
-			Channel:       "local",
-			Tools: []MCPTool{
-				{Name: "workspace.describe", Description: "Describe the local workspace placeholder.", Response: "local workspace placeholder", ReadOnly: true},
-				{Name: "workspace.echo", Description: "Echo one MCP tool argument.", Response: "{value}", ReadOnly: true},
-			},
-			Resources: []MCPResource{
-				{URI: "mcp://local-workspace/readme", Name: "readme", Description: "Local MCP placeholder readme.", MimeType: "text/plain", Content: "local workspace placeholder resource"},
-				{URI: "mcp://local-workspace/config", Name: "config", Description: "Local MCP placeholder config resource.", MimeType: "application/json", Content: "{\"runtime\":\"local\",\"kind\":\"placeholder\"}"},
-			},
-			Templates: []MCPTemplate{
-				{URI: "mcp://local-workspace/{name}", Description: "Placeholder resource template."},
-			},
-		},
-	}
+	return nil // No mock servers; real MCP servers are configured via config files
 }
 
 func (s *MCPService) syncManager() {

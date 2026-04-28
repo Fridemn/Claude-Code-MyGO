@@ -1,48 +1,61 @@
 package command
 
 import (
-	"claude-code-go/internal/agent"
-	"claude-code-go/internal/bootstrap"
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/engine"
-	"claude-code-go/internal/task"
-	"claude-code-go/internal/tool"
+	"claude-go/internal/agent"
+	"claude-go/internal/api"
+	"claude-go/internal/bootstrap"
+	"claude-go/internal/config"
+	"claude-go/internal/engine"
+	"claude-go/internal/task"
+	"claude-go/internal/tool"
 )
+
+// LocalJSXDoneOptions mirrors TS local-jsx onDone lifecycle options.
+type LocalJSXDoneOptions struct {
+	Display         string   `json:"display,omitempty"` // "user" | "system" | "skip"
+	ShouldQuery     bool     `json:"should_query,omitempty"`
+	MetaMessages    []string `json:"meta_messages,omitempty"`
+	NextInput       string   `json:"next_input,omitempty"`
+	SubmitNextInput bool     `json:"submit_next_input,omitempty"`
+}
 
 // Runtime provides context and dependencies for command execution
 type Runtime struct {
 	// Core components
-	Engine *engine.Engine
-	Agents *agent.Manager
-	Tools  *tool.Registry
-	State  *bootstrap.Store
-	Config config.Config
+	Engine   *engine.Engine
+	Provider *api.OpenAICompatibleClient // Added for direct API calls (side questions)
+	Agents   *agent.Manager
+	Tools    *tool.Registry
+	State    *bootstrap.Store
+	Config   config.Config
 
 	// Session management
-	CompactSession func(maxMessages int) (before int, after int)
+	CompactSession   func(maxMessages int) (before int, after int)
+	SaveSessionTitle func(sessionID, title string) error
+	RewindMessages   func(toIndex int) error
 
 	// MCP functions
-	MCPStatus       func() string
-	MCPServers      func() []MCPServerInfo
-	MCPTools        func(server string) []MCPToolInfo
-	MCPResources    func(server string) []MCPResourceInfo
-	MCPTemplates    func(server string) []MCPTemplateInfo
-	MCPSearchTools  func(query string) []MCPToolMatchInfo
-	MCPCallTool     func(server, tool string, args map[string]any) (string, error)
-	MCPReadResource func(server, uri string) (MCPResourceInfo, error)
-	ReloadMCP       func() string
-	ResetMCP        func() string
-	ConnectMCP      func(server string) bool
-	DisconnectMCP   func(server string) bool
-	RestartMCP      func(server string) bool
-	PingMCP         func(server string) (string, bool)
-	AuthenticateMCP func(server, token string) bool
-	SetMCPEnabledAll     func(enabled bool)
-	SetMCPServiceStatus  func(status string)
-	SetMCPEnabled        func(name string, enabled bool) bool
-	SetMCPStatus         func(name, status string) bool
-	AddMCPServer         func(server MCPServerInfo)
-	RemoveMCPServer      func(name string) bool
+	MCPStatus           func() string
+	MCPServers          func() []MCPServerInfo
+	MCPTools            func(server string) []MCPToolInfo
+	MCPResources        func(server string) []MCPResourceInfo
+	MCPTemplates        func(server string) []MCPTemplateInfo
+	MCPSearchTools      func(query string) []MCPToolMatchInfo
+	MCPCallTool         func(server, tool string, args map[string]any) (string, error)
+	MCPReadResource     func(server, uri string) (MCPResourceInfo, error)
+	ReloadMCP           func() string
+	ResetMCP            func() string
+	ConnectMCP          func(server string) bool
+	DisconnectMCP       func(server string) bool
+	RestartMCP          func(server string) bool
+	PingMCP             func(server string) (string, bool)
+	AuthenticateMCP     func(server, token string) bool
+	SetMCPEnabledAll    func(enabled bool)
+	SetMCPServiceStatus func(status string)
+	SetMCPEnabled       func(name string, enabled bool) bool
+	SetMCPStatus        func(name, status string) bool
+	AddMCPServer        func(server MCPServerInfo)
+	RemoveMCPServer     func(name string) bool
 
 	// Plugin functions
 	PluginStatus            func() string
@@ -74,10 +87,12 @@ type Runtime struct {
 	RemoveHook            func(event string) bool
 
 	// UI callbacks
-	OnExit        func()
-	OnClear       func()
-	OnThemeChange func(theme string)
-	OnModelChange func(model string)
+	OnExit         func()
+	OnClear        func()
+	OnThemeChange  func(theme string)
+	OnModelChange  func(model string)
+	OnConfigChange func(config.Config) error
+	OnLocalJSXDone func(result string, options LocalJSXDoneOptions)
 
 	// Command registry for help/listing
 	Commands func() []Command

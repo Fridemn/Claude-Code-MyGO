@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"claude-code-go/internal/command"
-	"claude-code-go/internal/tool"
+	"claude-go/internal/command"
+	"claude-go/internal/tool"
 )
 
 func registerDiff(r *command.Registry) {

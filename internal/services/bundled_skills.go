@@ -1,5 +1,7 @@
 package services
 
+import "claude-go/internal/tool/skill"
+
 type BundledSkillDefinition struct {
 	Name                   string
 	Description            string
@@ -44,11 +46,11 @@ func initBundledSkills() {
 	})
 }
 
-func bundledSkillEntries() []Skill {
+func bundledSkillEntries() []skill.Skill {
 	initBundledSkills()
-	out := make([]Skill, 0, len(bundledSkillRegistry))
+	out := make([]skill.Skill, 0, len(bundledSkillRegistry))
 	for _, def := range bundledSkillRegistry {
-		out = append(out, Skill{
+		out = append(out, skill.Skill{
 			Name:                   def.Name,
 			DisplayName:            def.Name,
 			Aliases:                append([]string(nil), def.Aliases...),

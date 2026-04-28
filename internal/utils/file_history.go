@@ -56,7 +56,7 @@ func CreateFileHistoryManager(cfg FileHistoryConfig) *FileHistoryManager {
 		cfg.MaxSnapshots = 100
 	}
 	if cfg.ConfigDir == "" {
-		cfg.ConfigDir = ".claude"
+		cfg.ConfigDir = ".claude-go"
 	}
 
 	return &FileHistoryManager{

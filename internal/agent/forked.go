@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"claude-code-go/internal/types"
+	"claude-go/internal/types"
 )
 
 // ForkedAgentResult contains the result of a forked agent execution.

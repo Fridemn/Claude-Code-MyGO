@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // SleepTool waits for a specified duration.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/ui/components"
+	"claude-go/internal/ui/components"
 )
 
 type testVirtualItem struct {

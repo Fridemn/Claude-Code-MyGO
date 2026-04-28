@@ -13,6 +13,11 @@ type rgb struct {
 	b int
 }
 
+// RGB is an exported RGB color type
+type RGB struct {
+	R, G, B int
+}
+
 type palette struct {
 	claude                rgb
 	claudeShimmer         rgb // Lighter claude orange for shimmer effect
@@ -37,6 +42,22 @@ type palette struct {
 	panelBackground       rgb
 	panelAccent           rgb
 	panelBorder           rgb
+}
+
+// DarkPalette is the exported dark color palette for use in external packages
+type DarkPalette struct {
+	Warning rgb
+	Error   rgb
+	Muted   rgb
+	Claude  rgb
+}
+
+// Dark is the exported dark palette
+var Dark = DarkPalette{
+	Warning: rgb{255, 193, 7},
+	Error:   rgb{255, 107, 128},
+	Muted:   rgb{134, 145, 160},
+	Claude:  rgb{215, 119, 87},
 }
 
 var dark = palette{
@@ -94,6 +115,11 @@ func style(fgColor, bgColor *rgb, text string, isBold bool) string {
 	b.WriteString(text)
 	b.WriteString(reset)
 	return b.String()
+}
+
+// Style is an exported version of style for use in external packages
+func Style(fgColor, bgColor *rgb, text string, isBold bool) string {
+	return style(fgColor, bgColor, text, isBold)
 }
 
 func badge(label string, fgColor, bgColor rgb) string {

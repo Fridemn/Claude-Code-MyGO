@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // Constants matching TS version
@@ -93,7 +93,7 @@ type AskUserQuestionOutput struct {
 
 func (AskUserQuestionTool) ParametersSchema() map[string]any {
 	return map[string]any{
-		"type":       "object",
+		"type": "object",
 		"properties": map[string]any{
 			"questions": map[string]any{
 				"type":        "array",
@@ -109,7 +109,7 @@ func (AskUserQuestionTool) ParametersSchema() map[string]any {
 				"type":        "object",
 				"description": "Optional per-question annotations from the user (e.g., notes on preview selections). Keyed by question text.",
 				"additionalProperties": map[string]any{
-					"type":       "object",
+					"type": "object",
 					"properties": map[string]any{
 						"preview": map[string]any{
 							"type":        "string",
@@ -123,7 +123,7 @@ func (AskUserQuestionTool) ParametersSchema() map[string]any {
 				},
 			},
 			"metadata": map[string]any{
-				"type":       "object",
+				"type":        "object",
 				"description": "Optional metadata for tracking and analytics purposes. Not displayed to user.",
 				"properties": map[string]any{
 					"source": map[string]any{
@@ -139,7 +139,7 @@ func (AskUserQuestionTool) ParametersSchema() map[string]any {
 
 func questionSchema() map[string]any {
 	return map[string]any{
-		"type":       "object",
+		"type": "object",
 		"properties": map[string]any{
 			"question": map[string]any{
 				"type":        "string",
@@ -165,7 +165,7 @@ func questionSchema() map[string]any {
 
 func optionSchema() map[string]any {
 	return map[string]any{
-		"type":       "object",
+		"type": "object",
 		"properties": map[string]any{
 			"label": map[string]any{
 				"type":        "string",
@@ -196,6 +196,128 @@ var globalUserInputHandler UserInputHandler
 // SetUserInputHandler sets the global user input handler
 func SetUserInputHandler(h UserInputHandler) {
 	globalUserInputHandler = h
+}
+
+// HasUserInputHandler reports whether an interactive handler is available.
+func HasUserInputHandler() bool {
+	return globalUserInputHandler != nil
+}
+
+// PermissionDecision is the user's decision for a permission request.
+type PermissionDecision string
+
+const (
+	PermissionDecisionAllowOnce   PermissionDecision = "allow_once"
+	PermissionDecisionAlwaysAllow PermissionDecision = "always_allow"
+	PermissionDecisionDeny        PermissionDecision = "deny"
+)
+
+var (
+	permissionOptionAllowOnce   = "Allow once (Recommended)"
+	permissionOptionAlwaysAllow = "Always allow this command"
+	permissionOptionDeny        = "Deny"
+)
+
+// RequestPermissionApproval asks the user to approve a command-like operation.
+// It reuses the AskUserQuestion interaction pipeline, so callers get a consistent
+// interactive experience in TUI mode.
+func RequestPermissionApproval(toolName, action, reason string, suggestions []string) (PermissionDecision, error) {
+	if globalUserInputHandler == nil {
+		return PermissionDecisionDeny, fmt.Errorf("no user input handler configured")
+	}
+
+	questionText := fmt.Sprintf("%s needs permission to run:\n%s", strings.TrimSpace(toolName), strings.TrimSpace(action))
+	reason = strings.TrimSpace(reason)
+	if reason != "" {
+		questionText += fmt.Sprintf("\nReason: %s", reason)
+	}
+	if len(suggestions) > 0 {
+		questionText += fmt.Sprintf("\nHint: %s", strings.TrimSpace(suggestions[0]))
+	}
+
+	answer, err := globalUserInputHandler.AskQuestion(Question{
+		Question: questionText,
+		Header:   "Permission",
+		Options: []QuestionOption{
+			{
+				Label:       permissionOptionAllowOnce,
+				Description: "Approve this operation for this attempt only.",
+			},
+			{
+				Label:       permissionOptionAlwaysAllow,
+				Description: "Remember this command pattern for the current session.",
+			},
+			{
+				Label:       permissionOptionDeny,
+				Description: "Do not run this operation.",
+			},
+		},
+	})
+	if err != nil {
+		return PermissionDecisionDeny, err
+	}
+
+	switch strings.TrimSpace(answer) {
+	case permissionOptionAllowOnce:
+		return PermissionDecisionAllowOnce, nil
+	case permissionOptionAlwaysAllow:
+		return PermissionDecisionAlwaysAllow, nil
+	default:
+		return PermissionDecisionDeny, nil
+	}
+}
+
+// FileEditPermissionRequest represents a file edit permission request with diff preview
+type FileEditPermissionRequest struct {
+	FilePath  string
+	OldString string
+	NewString string
+	ReplaceAll bool
+}
+
+// RequestFileEditPermissionApproval asks the user to approve a file edit with diff preview
+// This matches the TS FileEditPermissionRequest behavior showing the diff before approval
+func RequestFileEditPermissionApproval(req FileEditPermissionRequest) (PermissionDecision, error) {
+	if globalUserInputHandler == nil {
+		return PermissionDecisionDeny, fmt.Errorf("no user input handler configured")
+	}
+
+	// Build the permission question with diff preview embedded
+	questionText := fmt.Sprintf("Edit needs permission to run:\nEdit file %s", req.FilePath)
+
+	// The preview content will be rendered by the permission dialog
+	// We pass the edit details via extra metadata that the dialog can use
+
+	answer, err := globalUserInputHandler.AskQuestion(Question{
+		Question: questionText,
+		Header:   "Permission",
+		Options: []QuestionOption{
+			{
+				Label:       permissionOptionAllowOnce,
+				Description: "Approve this edit for this attempt only.",
+			},
+			{
+				Label:       permissionOptionAlwaysAllow,
+				Description: "Remember this edit pattern for the current session.",
+			},
+			{
+				Label:       permissionOptionDeny,
+				Description: "Do not apply this edit.",
+			},
+		},
+	})
+	if err != nil {
+		return PermissionDecisionDeny, err
+	}
+
+	switch strings.TrimSpace(answer) {
+	case permissionOptionAllowOnce:
+		return PermissionDecisionAllowOnce, nil
+	case permissionOptionAlwaysAllow:
+		return PermissionDecisionAlwaysAllow, nil
+	default:
+		return PermissionDecisionDeny, nil
+	}
 }
 
 func (AskUserQuestionTool) Call(ctx context.Context, in tool.Input, _ tool.Runtime) (tool.Result, error) {

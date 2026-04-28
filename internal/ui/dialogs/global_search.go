@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"claude-code-go/internal/ui/components"
+	"claude-go/internal/ui/components"
 )
 
 type GlobalSearchMatch struct {

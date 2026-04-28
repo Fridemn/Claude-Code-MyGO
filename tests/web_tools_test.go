@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"claude-code-go/internal/tool"
-	"claude-code-go/internal/tool/web"
+	"claude-go/internal/tool"
+	"claude-go/internal/tool/web"
 )
 
 func TestWebFetchTool_Name(t *testing.T) {

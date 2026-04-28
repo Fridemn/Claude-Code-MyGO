@@ -1,8 +1,8 @@
 package tests
 
 import (
-	"claude-code-go/internal/tool/file"
-	"claude-code-go/internal/tool/search"
+	"claude-go/internal/tool/file"
+	"claude-go/internal/tool/search"
 
 	"context"
 	"os"
@@ -11,18 +11,19 @@ import (
 	"testing"
 	"time"
 
-	"claude-code-go/internal/bootstrap"
-	"claude-code-go/internal/command"
-	cmddev "claude-code-go/internal/command/dev"
-	cmdfiles "claude-code-go/internal/command/files"
-	cmdmemory "claude-code-go/internal/command/memory"
-	cmdsession "claude-code-go/internal/command/session"
-	cmdstats "claude-code-go/internal/command/stats"
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/engine"
-	"claude-code-go/internal/session"
-	"claude-code-go/internal/tool"
-	"claude-code-go/internal/types"
+	"claude-go/internal/bootstrap"
+	"claude-go/internal/command"
+	cmddev "claude-go/internal/command/dev"
+	cmdfiles "claude-go/internal/command/files"
+	cmdmemory "claude-go/internal/command/memory"
+	cmdsession "claude-go/internal/command/session"
+	cmdstats "claude-go/internal/command/stats"
+	"claude-go/internal/config"
+	"claude-go/internal/engine"
+	"claude-go/internal/session"
+	"claude-go/internal/tool"
+	"claude-go/internal/types"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestFileAndSessionCommands(t *testing.T) {
@@ -55,7 +56,7 @@ func TestFileAndSessionCommands(t *testing.T) {
 		Engine: eng,
 		Tools:  toolsRegistry,
 		Config: config.Config{
-			AppName:    "Claude-Code-Go",
+			AppName:    "Claude-Go",
 			Model:      "test-model",
 			BaseURL:    "https://example.com/v1/chat/completions",
 			MaxTurns:   8,
@@ -69,7 +70,7 @@ func TestFileAndSessionCommands(t *testing.T) {
 	checkCommandContains(t, registry, runtime, "/history", "ASSISTANT")
 	checkCommandContains(t, registry, runtime, "/history", "world")
 	checkCommandContains(t, registry, runtime, "/prompt", "system prompt")
-	checkCommandContains(t, registry, runtime, "/config", "app=Claude-Code-Go")
+	checkCommandContains(t, registry, runtime, "/config", "app=Claude-Go")
 	checkCommandContains(t, registry, runtime, "/memory", "recent_memory:")
 }
 
@@ -98,10 +99,10 @@ func TestStatsAndDevCommands(t *testing.T) {
 		State: store,
 		Tools: toolsRegistry,
 		Config: config.Config{
-			AppName:    "Claude-Code-Go",
+			AppName:    "Claude-Go",
 			Model:      "test-model",
 			BaseURL:    "https://example.com/v1/chat/completions",
-			SessionDir: ".claude-code-go/sessions",
+			SessionDir: ".claude-go/sessions",
 		},
 	}
 
@@ -113,6 +114,187 @@ func TestStatsAndDevCommands(t *testing.T) {
 	checkCommandContains(t, registry, runtime, "/model", "model=test-model")
 	checkCommandContains(t, registry, runtime, "/doctor", "git=true")
 	checkCommandContains(t, registry, runtime, "/diff .", "diff --git")
+}
+
+func TestUsageCommandLoadModel(t *testing.T) {
+	t.Parallel()
+
+	registry := command.EmptyRegistry()
+	cmdstats.Register(registry)
+
+	store, err := bootstrap.CreateStore(config.Config{Model: "test-model"})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	store.RecordTurn("test-model", 5*time.Millisecond)
+	store.RecordTurn("test-model", 5*time.Millisecond)
+
+	closed := false
+	model, _, handled, err := registry.LoadModel(context.Background(), "/usage", command.Runtime{
+		State: store,
+		OnExit: func() {
+			closed = true
+		},
+	})
+	if err != nil {
+		t.Fatalf("load model failed: %v", err)
+	}
+	if !handled || model == nil {
+		t.Fatalf("expected /usage load model handled, handled=%t model=%T", handled, model)
+	}
+	if !strings.Contains(model.View(), "Usage") {
+		t.Fatalf("expected usage model view, got %q", model.View())
+	}
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("expected esc to emit quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from usage model")
+	}
+	if !closed {
+		t.Fatal("expected usage model to trigger OnExit")
+	}
+}
+
+func TestToolsCommandLoadModel(t *testing.T) {
+	t.Parallel()
+
+	registry := command.EmptyRegistry()
+	cmdstats.Register(registry)
+
+	toolsRegistry := tool.EmptyRegistry()
+	file.RegisterFileTools(toolsRegistry)
+
+	closed := false
+	model, _, handled, err := registry.LoadModel(context.Background(), "/tools", command.Runtime{
+		Tools: toolsRegistry,
+		OnExit: func() {
+			closed = true
+		},
+	})
+	if err != nil {
+		t.Fatalf("load model failed: %v", err)
+	}
+	if !handled || model == nil {
+		t.Fatalf("expected /tools load model handled, handled=%t model=%T", handled, model)
+	}
+	if !strings.Contains(model.View(), "list_files") {
+		t.Fatalf("expected tools model to include list_files, got %q", model.View())
+	}
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("expected esc to emit quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from tools model")
+	}
+	if !closed {
+		t.Fatal("expected tools model to trigger OnExit")
+	}
+}
+
+func TestConfigCommandLoadModelViaSettingsAlias(t *testing.T) {
+	t.Parallel()
+
+	registry := command.EmptyRegistry()
+	cmdsession.Register(registry)
+
+	eng := createTestEngineWithMessages(t, []types.Message{
+		{Role: types.RoleSystem, Content: "system prompt"},
+		{Role: types.RoleUser, Content: "hello"},
+	})
+
+	closed := false
+	model, _, handled, err := registry.LoadModel(context.Background(), "/settings", command.Runtime{
+		Engine: eng,
+		Config: config.Config{
+			AppName:    "Claude-Go",
+			Model:      "test-model",
+			BaseURL:    "https://example.com/v1/chat/completions",
+			MaxTurns:   8,
+			SessionDir: ".claude-go/sessions",
+		},
+		OnExit: func() {
+			closed = true
+		},
+	})
+	if err != nil {
+		t.Fatalf("load model failed: %v", err)
+	}
+	if !handled || model == nil {
+		t.Fatalf("expected /settings load model handled, handled=%t model=%T", handled, model)
+	}
+	if !strings.Contains(model.View(), "Settings") || !strings.Contains(model.View(), "app=Claude-Go") {
+		t.Fatalf("unexpected config model view: %q", model.View())
+	}
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("expected esc to emit quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from config model")
+	}
+	if !closed {
+		t.Fatal("expected config model to trigger OnExit")
+	}
+}
+
+func TestMemoryCommandLoadModelCancelUsesOnDone(t *testing.T) {
+	registry := command.EmptyRegistry()
+	cmdmemory.Register(registry)
+
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	store, err := bootstrap.CreateStore(config.Config{Model: "test-model"})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	store.SetCWD(root)
+
+	eng := createTestEngineWithMessages(t, []types.Message{
+		{Role: types.RoleSystem, Content: "system prompt"},
+		{Role: types.RoleUser, Content: "hello"},
+		{Role: types.RoleAssistant, Content: "world"},
+	})
+
+	var doneResult string
+	var doneDisplay string
+	model, _, handled, err := registry.LoadModel(context.Background(), "/memory", command.Runtime{
+		Engine: eng,
+		State:  store,
+		OnLocalJSXDone: func(result string, options command.LocalJSXDoneOptions) {
+			doneResult = result
+			doneDisplay = options.Display
+		},
+	})
+	if err != nil {
+		t.Fatalf("load model failed: %v", err)
+	}
+	if !handled || model == nil {
+		t.Fatalf("expected /memory load model handled, handled=%t model=%T", handled, model)
+	}
+	if !strings.Contains(model.View(), "Memory") {
+		t.Fatalf("expected memory model view, got %q", model.View())
+	}
+
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("expected esc to emit quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from memory model")
+	}
+	if doneResult != "Cancelled memory editing" {
+		t.Fatalf("unexpected onDone result: %q", doneResult)
+	}
+	if doneDisplay != "system" {
+		t.Fatalf("expected system display, got %q", doneDisplay)
+	}
 }
 
 func checkCommandContains(t *testing.T, registry *command.Registry, runtime command.Runtime, line string, want string) {
@@ -151,8 +333,8 @@ func createTestEngineWithMessages(t *testing.T, messages []types.Message) *engin
 
 type fakeExecCommandTool struct{}
 
-func (fakeExecCommandTool) Name() string              { return "exec_command" }
-func (fakeExecCommandTool) Description() string       { return "fake exec tool for command tests" }
+func (fakeExecCommandTool) Name() string               { return "exec_command" }
+func (fakeExecCommandTool) Description() string        { return "fake exec tool for command tests" }
 func (fakeExecCommandTool) IsReadOnly(tool.Input) bool { return true }
 func (fakeExecCommandTool) Call(_ context.Context, in tool.Input, _ tool.Runtime) (tool.Result, error) {
 	commandStr, _ := in["command"].(string)

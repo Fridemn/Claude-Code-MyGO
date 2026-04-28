@@ -7,39 +7,21 @@ import (
 	"strings"
 	"time"
 
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
+	"claude-go/internal/tool/skill"
 )
 
-type Skill struct {
-	Name                   string   `json:"name"`
-	DisplayName            string   `json:"display_name,omitempty"`
-	Aliases                []string `json:"aliases,omitempty"`
-	Description            string   `json:"description"`
-	WhenToUse              string   `json:"when_to_use,omitempty"`
-	ArgumentHint           string   `json:"argument_hint,omitempty"`
-	AllowedTools           []string `json:"allowed_tools,omitempty"`
-	Version                string   `json:"version,omitempty"`
-	Model                  string   `json:"model,omitempty"`
-	Context                string   `json:"context,omitempty"`
-	Agent                  string   `json:"agent,omitempty"`
-	Source                 string   `json:"source"`
-	LoadedFrom             string   `json:"loaded_from"`
-	Path                   string   `json:"path,omitempty"`
-	BaseDir                string   `json:"base_dir,omitempty"`
-	Prompt                 string   `json:"-"`
-	UserInvocable          bool     `json:"user_invocable"`
-	DisableModelInvocation bool     `json:"disable_model_invocation,omitempty"`
-}
+// Skill type is defined in tool/skill package to avoid import cycles
 
 type SkillsService struct {
 	cwd           string
 	status        string
 	lastLoadedAt  time.Time
 	lastLoadError string
-	userSkills    []Skill
-	localSkills   []Skill
-	pluginSkills  []Skill
-	bundledSkills []Skill
+	userSkills    []skill.Skill
+	localSkills   []skill.Skill
+	pluginSkills  []skill.Skill
+	bundledSkills []skill.Skill
 }
 
 func CreateSkillsService(cwd string) *SkillsService {
@@ -52,11 +34,11 @@ func CreateSkillsService(cwd string) *SkillsService {
 	return service
 }
 
-func (s *SkillsService) Reload(pluginSkills []Skill) {
-	var userSkills []Skill
+func (s *SkillsService) Reload(pluginSkills []skill.Skill) {
+	var userSkills []skill.Skill
 	home, _ := os.UserHomeDir()
 	if strings.TrimSpace(home) != "" {
-		userSkillsDir := filepath.Join(home, ".claude", "skills")
+		userSkillsDir := filepath.Join(home, ".claude-go", "skills")
 		userLoaded, err := loadSkillEntriesFromDir(userSkillsDir, "userSettings", "skills", "")
 		if err == nil {
 			userSkills = userLoaded
@@ -64,11 +46,11 @@ func (s *SkillsService) Reload(pluginSkills []Skill) {
 			s.lastLoadError = err.Error()
 		}
 	}
-	skillsDir := filepath.Join(s.cwd, ".claude", "skills")
+	skillsDir := filepath.Join(s.cwd, ".claude-go", "skills")
 	localSkills, err := loadSkillEntriesFromDir(skillsDir, "projectSettings", "skills", "")
 	s.lastLoadedAt = time.Now()
 	s.userSkills = userSkills
-	s.pluginSkills = append([]Skill(nil), pluginSkills...)
+	s.pluginSkills = append([]skill.Skill(nil), pluginSkills...)
 	if err != nil {
 		s.lastLoadError = err.Error()
 		s.localSkills = nil
@@ -78,8 +60,8 @@ func (s *SkillsService) Reload(pluginSkills []Skill) {
 	s.localSkills = localSkills
 }
 
-func (s *SkillsService) List() []Skill {
-	out := make([]Skill, 0, len(s.bundledSkills)+len(s.userSkills)+len(s.localSkills)+len(s.pluginSkills))
+func (s *SkillsService) List() []skill.Skill {
+	out := make([]skill.Skill, 0, len(s.bundledSkills)+len(s.userSkills)+len(s.localSkills)+len(s.pluginSkills))
 	out = append(out, s.bundledSkills...)
 	out = append(out, s.userSkills...)
 	out = append(out, s.localSkills...)
@@ -96,8 +78,8 @@ func (s *SkillsService) Status() string {
 	lines := []string{
 		"skills=" + s.status,
 		fmt.Sprintf("registered=%d", len(skills)),
-		fmt.Sprintf("user_dir=%s", filepath.Join(userHomeDir(), ".claude", "skills")),
-		fmt.Sprintf("project_dir=%s", filepath.Join(s.cwd, ".claude", "skills")),
+		fmt.Sprintf("user_dir=%s", filepath.Join(userHomeDir(), ".claude-go", "skills")),
+		fmt.Sprintf("project_dir=%s", filepath.Join(s.cwd, ".claude-go", "skills")),
 		fmt.Sprintf("last_loaded=%s", formatLoadTime(s.lastLoadedAt)),
 	}
 	if strings.TrimSpace(s.lastLoadError) != "" {

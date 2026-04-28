@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"net/http"
 	"time"
@@ -9,16 +10,87 @@ import (
 
 // Default retry configuration constants
 const (
-	DefaultMaxRetries     = 10
-	DefaultBaseDelay      = 500 * time.Millisecond
-	DefaultMaxDelay       = 32 * time.Second
-	DefaultJitterFactor   = 0.25
-	Max529Retries         = 3
-	StreamIdleTimeout     = 60 * time.Second
-	PersistentMaxBackoff  = 5 * time.Minute
-	PersistentResetCap    = 6 * time.Hour
-	HeartbeatInterval     = 30 * time.Second
+	DefaultMaxRetries       = 10
+	DefaultBaseDelay        = 500 * time.Millisecond
+	DefaultMaxDelay         = 32 * time.Second
+	DefaultJitterFactor     = 0.25
+	Max529Retries           = 3
+	StreamIdleTimeout       = 60 * time.Second
+	PersistentMaxBackoff    = 5 * time.Minute
+	PersistentResetCap      = 6 * time.Hour
+	HeartbeatInterval       = 30 * time.Second
+	FloorOutputTokens       = 3000
+	MinCooldown             = 10 * time.Minute
+	DefaultFastModeFallback = 30 * time.Minute
+	ShortRetryThreshold     = 20 * time.Second
 )
+
+// QuerySource represents where a query originates
+type QuerySource string
+
+const (
+	QuerySourceREPLMainThread QuerySource = "repl_main_thread"
+	QuerySourceSDK            QuerySource = "sdk"
+	QuerySourceAgentCustom    QuerySource = "agent:custom"
+	QuerySourceAgentDefault   QuerySource = "agent:default"
+	QuerySourceAgentBuiltin   QuerySource = "agent:builtin"
+	QuerySourceCompact        QuerySource = "compact"
+	QuerySourceHookAgent      QuerySource = "hook_agent"
+	QuerySourceHookPrompt     QuerySource = "hook_prompt"
+	QuerySourceAutoMode       QuerySource = "auto_mode"
+	QuerySourceBackground     QuerySource = "background"
+)
+
+// Foreground529RetrySources are query sources that retry on 529
+// Background sources bail immediately to avoid amplification during capacity cascades
+var Foreground529RetrySources = map[QuerySource]bool{
+	QuerySourceREPLMainThread: true,
+	QuerySourceSDK:            true,
+	QuerySourceAgentCustom:    true,
+	QuerySourceAgentDefault:   true,
+	QuerySourceAgentBuiltin:   true,
+	QuerySourceCompact:        true,
+	QuerySourceHookAgent:      true,
+	QuerySourceHookPrompt:     true,
+	QuerySourceAutoMode:       true,
+}
+
+// ShouldRetry529 determines if a 529 error should be retried based on query source
+func ShouldRetry529(querySource QuerySource) bool {
+	// Undefined source -> retry (conservative)
+	if querySource == "" {
+		return true
+	}
+	return Foreground529RetrySources[querySource]
+}
+
+// CannotRetryError indicates that retry attempts have been exhausted
+type CannotRetryError struct {
+	OriginalError error
+	MaxTokens     int
+	Model         string
+}
+
+func (e *CannotRetryError) Error() string {
+	if e.OriginalError != nil {
+		return e.OriginalError.Error()
+	}
+	return "retry exhausted"
+}
+
+func (e *CannotRetryError) Unwrap() error {
+	return e.OriginalError
+}
+
+// FallbackTriggeredError indicates model fallback was triggered
+type FallbackTriggeredError struct {
+	OriginalModel string
+	FallbackModel string
+}
+
+func (e *FallbackTriggeredError) Error() string {
+	return "model fallback triggered: " + e.OriginalModel + " -> " + e.FallbackModel
+}
 
 // RetryConfig holds retry configuration
 type RetryConfig struct {
@@ -240,6 +312,12 @@ func DefaultRetryableChecker(err error) bool {
 		return false
 	}
 
+	// Check for context overflow errors - these ARE retryable
+	// The caller should adjust max_tokens and retry
+	if IsContextOverflowError(err) {
+		return true
+	}
+
 	// Check for rate limit errors
 	if IsRateLimitError(err) {
 		return true
@@ -270,6 +348,11 @@ func DefaultRetryableChecker(err error) bool {
 		return true
 	}
 
+	// Retry on 401/403 for auth errors (clears cached credentials)
+	if IsAuthenticationError(err) {
+		return true
+	}
+
 	return false
 }
 
@@ -285,6 +368,11 @@ func StreamingRetryableChecker(err error) bool {
 		return false
 	}
 
+	// Context overflow errors ARE retryable (with adjusted max_tokens)
+	if IsContextOverflowError(err) {
+		return true
+	}
+
 	// Rate limits are retryable for streaming
 	if IsRateLimitError(err) {
 		return true
@@ -297,6 +385,11 @@ func StreamingRetryableChecker(err error) bool {
 
 	// Server errors are retryable
 	if IsServerError(err) {
+		return true
+	}
+
+	// Request/connect timeouts are retryable before a stream has completed.
+	if IsTimeoutError(err) {
 		return true
 	}
 
@@ -429,4 +522,186 @@ func ExtractHeadersFromResponse(resp *http.Response) map[string]string {
 	}
 
 	return headers
+}
+
+// GetRetryAfterHeader extracts the Retry-After value from error headers
+func GetRetryAfterHeader(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	// Try to get from APIError headers
+	if apiErr, ok := err.(*APIError); ok {
+		if apiErr.Headers != nil {
+			if val, ok := apiErr.Headers["Retry-After"]; ok {
+				return val
+			}
+		}
+	}
+
+	return ""
+}
+
+// ParseRetryAfterHeader parses Retry-After as seconds
+func ParseRetryAfterHeader(value string) int {
+	if value == "" {
+		return 0
+	}
+
+	// Try parsing as seconds
+	var seconds int
+	if _, err := fmt.Sscanf(value, "%d", &seconds); err == nil && seconds > 0 {
+		return seconds
+	}
+
+	// Try parsing as HTTP date
+	if t, err := time.Parse(time.RFC1123, value); err == nil {
+		delta := time.Until(t)
+		if delta > 0 {
+			return int(delta.Seconds())
+		}
+	}
+
+	return 0
+}
+
+// GetRateLimitResetDelay extracts the rate limit reset delay in milliseconds
+// Returns nil if no reset header is available
+func GetRateLimitResetDelay(err error) *time.Duration {
+	if err == nil {
+		return nil
+	}
+
+	if apiErr, ok := err.(*APIError); ok {
+		resetHeader := ""
+		if apiErr.Headers != nil {
+			resetHeader = apiErr.Headers["Anthropic-Ratelimit-Unified-Reset"]
+		}
+
+		if resetHeader != "" {
+			resetUnixSec := 0
+			if _, scanErr := fmt.Sscanf(resetHeader, "%d", &resetUnixSec); scanErr == nil {
+				delayMs := int64(resetUnixSec)*1000 - time.Now().UnixMilli()
+				if delayMs > 0 {
+					delay := time.Duration(delayMs) * time.Millisecond
+					// Cap at persistent reset cap
+					if delay > PersistentResetCap {
+						delay = PersistentResetCap
+					}
+					return &delay
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// GetEnhancedRetryDelay calculates retry delay with optional Retry-After header support
+// and configurable max delay. Matches TypeScript getRetryDelay logic.
+func GetEnhancedRetryDelay(attempt int, retryAfterHeader string, maxDelayMs int64) time.Duration {
+	if retryAfterHeader != "" {
+		if seconds := ParseRetryAfterHeader(retryAfterHeader); seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+
+	// Calculate base delay with exponential backoff
+	baseDelay := float64(DefaultBaseDelay)
+	for i := 0; i < attempt-1; i++ {
+		baseDelay *= 2
+	}
+
+	// Cap at max delay
+	if baseDelay > float64(maxDelayMs) {
+		baseDelay = float64(maxDelayMs)
+	}
+
+	// Add jitter (±25%)
+	jitter := baseDelay * DefaultJitterFactor * (2*rand.Float64() - 1)
+	return time.Duration(baseDelay + jitter)
+}
+
+// IsTransientCapacityError checks if error is a transient capacity error (429 or 529)
+func IsTransientCapacityError(err error) bool {
+	return Is529Error(err) || IsRateLimitError(err)
+}
+
+// ShouldRetry determines if a specific API error should be retried
+// This is a more sophisticated check than the simple retryable checkers above
+func ShouldRetry(err error, querySource QuerySource, persistentMode bool) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for context cancellation
+	if err == context.Canceled || err == context.DeadlineExceeded {
+		return false
+	}
+
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		// For non-API errors (connection, etc.), check connection errors
+		return IsConnectionError(err) || IsTimeoutError(err)
+	}
+
+	// Persistent mode: 429/529 always retryable
+	if persistentMode && IsTransientCapacityError(err) {
+		return true
+	}
+
+	// 529 errors: check query source for foreground retry
+	if Is529Error(err) {
+		return ShouldRetry529(querySource)
+	}
+
+	// Check x-should-retry header
+	if apiErr.Headers != nil {
+		if shouldRetry, ok := apiErr.Headers["X-Should-Retry"]; ok {
+			if shouldRetry == "true" {
+				return true
+			}
+			if shouldRetry == "false" {
+				// Ants can ignore x-should-retry:false for 5xx errors
+				return apiErr.StatusCode >= 500
+			}
+		}
+	}
+
+	// 408 Request timeout - retryable
+	if apiErr.StatusCode == 408 {
+		return true
+	}
+
+	// 409 Lock timeout - retryable
+	if apiErr.StatusCode == 409 {
+		return true
+	}
+
+	// 429 Rate limit - retryable
+	if apiErr.StatusCode == 429 {
+		return true
+	}
+
+	// 401/403 Auth errors - retryable (clears cached credentials)
+	if apiErr.StatusCode == 401 || apiErr.StatusCode == 403 {
+		return true
+	}
+
+	// OAuth token revoked - retryable
+	if IsOAuthTokenRevokedError(err) {
+		return true
+	}
+
+	// 5xx Server errors - retryable
+	if apiErr.StatusCode >= 500 {
+		return true
+	}
+
+	// Context overflow - retryable
+	if IsContextOverflowError(err) {
+		return true
+	}
+
+	return false
 }

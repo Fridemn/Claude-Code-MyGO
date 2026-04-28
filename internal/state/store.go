@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"claude-code-go/internal/types"
+	"claude-go/internal/types"
 )
 
 type Store struct {

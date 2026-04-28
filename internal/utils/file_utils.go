@@ -243,3 +243,26 @@ func PathExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
+
+// GetConfigDir returns the Claude Code Go config directory.
+// Uses XDG_CONFIG_HOME env var if set, otherwise ~/.claude-go.
+// This matches the TS getClaudeConfigHomeDir() behavior.
+// Ported from src/utils/envUtils.ts:getClaudeConfigHomeDir
+func GetConfigDir() string {
+	// Check XDG_CONFIG_HOME first (Linux/BSD standard)
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "claude-go")
+	}
+
+	// Fall back to ~/.config/claude-go on Unix-like systems
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".config", "claude-go")
+	}
+
+	// Last resort: ~/.claude-go
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".claude-go")
+	}
+
+	return ".claude-go"
+}

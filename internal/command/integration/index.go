@@ -1,7 +1,7 @@
 package integration
 
 import (
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 // Register registers all integration commands with the registry

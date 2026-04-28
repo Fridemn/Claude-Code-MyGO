@@ -1,7 +1,7 @@
 package stats
 
 import (
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 // Register registers all stats commands with the registry
@@ -11,5 +11,6 @@ func Register(r *command.Registry) {
 	registerCost(r)
 	registerTools(r)
 	registerTool(r)
-	registerModel(r)
+	registerEffort(r)
+	registerStatus(r)
 }

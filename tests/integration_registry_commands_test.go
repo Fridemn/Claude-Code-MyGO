@@ -1,17 +1,19 @@
 package tests
 
 import (
-	mcptool "claude-code-go/internal/tool/mcp"
+	mcptool "claude-go/internal/tool/mcp"
 
-	"claude-code-go/internal/tool/file"
+	"claude-go/internal/tool/file"
 
 	"context"
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/command"
-	cmdintegration "claude-code-go/internal/command/integration"
-	"claude-code-go/internal/tool"
+	"claude-go/internal/command"
+	cmdintegration "claude-go/internal/command/integration"
+	"claude-go/internal/tool"
+	bashtool "claude-go/internal/tool/bash"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestPluginRegistryCommands(t *testing.T) {
@@ -22,13 +24,13 @@ func TestPluginRegistryCommands(t *testing.T) {
 
 	plugins := []command.PluginInfo{
 		{
-			Name:        "demo-plugin",
-			Source:      "local",
-			Status:      "configured",
-			SourceType:  "directory",
-			Description: "demo plugin",
-			Enabled:     true,
-			Category:    "utility",
+			Name:         "demo-plugin",
+			Source:       "local",
+			Status:       "configured",
+			SourceType:   "directory",
+			Description:  "demo plugin",
+			Enabled:      true,
+			Category:     "utility",
 			CommandCount: 1,
 		},
 		{
@@ -63,7 +65,7 @@ func TestPluginRegistryCommands(t *testing.T) {
 			resetCalled = true
 			return "plugin registry reset"
 		},
-		SetPluginsEnabledAll: func(enabled bool) {},
+		SetPluginsEnabledAll:    func(enabled bool) {},
 		SetPluginsServiceStatus: func(status string) {},
 		SetPluginEnabled: func(name string, enabled bool) bool {
 			for i := range plugins {
@@ -165,7 +167,7 @@ func TestHookRegistryCommands(t *testing.T) {
 			resetCalled = true
 			return "hook registry reset"
 		},
-		SetHooksEnabledAll: func(enabled bool) {},
+		SetHooksEnabledAll:    func(enabled bool) {},
 		SetHooksServiceStatus: func(status string) {},
 		SetHookEnabled: func(event string, enabled bool) bool {
 			for i := range hooks {
@@ -223,6 +225,231 @@ func TestHookRegistryCommands(t *testing.T) {
 
 	if !reloadCalled || !resetCalled {
 		t.Fatalf("expected reload and reset hook callbacks to run")
+	}
+}
+
+func TestThemeCommandLoadModelAppliesThemeAndOnDone(t *testing.T) {
+	t.Parallel()
+
+	registry := command.EmptyRegistry()
+	cmdintegration.Register(registry)
+
+	var changedTheme string
+	var doneResult string
+	var doneDisplay string
+	runtime := command.Runtime{
+		OnThemeChange: func(theme string) {
+			changedTheme = theme
+		},
+		OnLocalJSXDone: func(result string, options command.LocalJSXDoneOptions) {
+			doneResult = result
+			doneDisplay = options.Display
+		},
+	}
+
+	model, _, handled, err := registry.LoadModel(context.Background(), "/theme", runtime)
+	if err != nil {
+		t.Fatalf("load model failed: %v", err)
+	}
+	if !handled || model == nil {
+		t.Fatalf("expected /theme load model handled, handled=%t model=%T", handled, model)
+	}
+	if !strings.Contains(model.View(), "Theme") {
+		t.Fatalf("expected theme picker view, got %q", model.View())
+	}
+
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected enter to emit quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from theme picker")
+	}
+	if changedTheme == "" {
+		t.Fatal("expected OnThemeChange callback")
+	}
+	if !strings.HasPrefix(doneResult, "Theme set to ") {
+		t.Fatalf("expected onDone success message, got %q", doneResult)
+	}
+	if doneDisplay != "" {
+		t.Fatalf("expected default display for success, got %q", doneDisplay)
+	}
+}
+
+func TestPermissionsCommandLoadModelSupportsModeSwitching(t *testing.T) {
+	t.Parallel()
+
+	registry := command.EmptyRegistry()
+	cmdintegration.Register(registry)
+
+	checker := bashtool.GetPermissionChecker()
+	origMode := checker.GetMode()
+	origRules := checker.RulesSnapshot()
+	checker.ClearRules()
+	checker.SetMode(bashtool.PermissionModeAsk)
+	checker.AddRule(bashtool.RuleFromPattern("git *", bashtool.BehaviorAllow))
+	checker.AddRule(bashtool.RuleFromPattern("rm *", bashtool.BehaviorDeny))
+	defer func() {
+		checker.ClearRules()
+		checker.AddRules(origRules)
+		checker.SetMode(origMode)
+	}()
+
+	model, _, handled, err := registry.LoadModel(context.Background(), "/permissions", command.Runtime{})
+	if err != nil {
+		t.Fatalf("load model failed: %v", err)
+	}
+	if !handled || model == nil {
+		t.Fatalf("expected /permissions load model handled, handled=%t model=%T", handled, model)
+	}
+	view := model.View()
+	if !strings.Contains(view, "Permissions") || !strings.Contains(view, "git *") {
+		t.Fatalf("unexpected permissions model view: %q", view)
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	model = next
+	if checker.GetMode() != bashtool.PermissionModeAcceptEdits {
+		t.Fatalf("expected mode switch to acceptEdits, got %s", checker.GetMode())
+	}
+
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("expected esc to emit quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from permissions model")
+	}
+}
+
+func TestMCPCommandLoadModelRendersOverview(t *testing.T) {
+	t.Parallel()
+
+	registry := command.EmptyRegistry()
+	cmdintegration.Register(registry)
+
+	closed := false
+	runtime := command.Runtime{
+		MCPStatus: func() string { return "mcp=active" },
+		MCPServers: func() []command.MCPServerInfo {
+			return []command.MCPServerInfo{
+				{
+					Name:      "demo",
+					Transport: "stdio",
+					Status:    "configured",
+					Enabled:   true,
+					ToolCount: 2,
+				},
+			}
+		},
+		OnExit: func() {
+			closed = true
+		},
+	}
+
+	model, _, handled, err := registry.LoadModel(context.Background(), "/mcp", runtime)
+	if err != nil {
+		t.Fatalf("load model failed: %v", err)
+	}
+	if !handled || model == nil {
+		t.Fatalf("expected /mcp load model handled, handled=%t model=%T", handled, model)
+	}
+	view := model.View()
+	if !strings.Contains(view, "registry=mcp") || !strings.Contains(view, "demo") {
+		t.Fatalf("unexpected mcp model view: %q", view)
+	}
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("expected esc to emit quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from mcp model")
+	}
+	if !closed {
+		t.Fatal("expected mcp model to trigger OnExit")
+	}
+}
+
+func TestPluginsCommandLoadModelRendersOverview(t *testing.T) {
+	t.Parallel()
+
+	registry := command.EmptyRegistry()
+	cmdintegration.Register(registry)
+
+	runtime := command.Runtime{
+		PluginStatus: func() string { return "plugins=active" },
+		PluginList: func() []command.PluginInfo {
+			return []command.PluginInfo{
+				{
+					Name:       "demo-plugin",
+					Source:     "local",
+					SourceType: "directory",
+					Status:     "configured",
+					Enabled:    true,
+				},
+			}
+		},
+	}
+
+	model, _, handled, err := registry.LoadModel(context.Background(), "/plugins", runtime)
+	if err != nil {
+		t.Fatalf("load model failed: %v", err)
+	}
+	if !handled || model == nil {
+		t.Fatalf("expected /plugins load model handled, handled=%t model=%T", handled, model)
+	}
+	view := model.View()
+	if !strings.Contains(view, "registry=plugins") || !strings.Contains(view, "demo-plugin") {
+		t.Fatalf("unexpected plugins model view: %q", view)
+	}
+}
+
+func TestHooksCommandLoadModelRendersOverview(t *testing.T) {
+	t.Parallel()
+
+	registry := command.EmptyRegistry()
+	cmdintegration.Register(registry)
+
+	closed := false
+	runtime := command.Runtime{
+		HookStatus: func() string { return "hooks=active" },
+		HookList: func() []command.HookInfo {
+			return []command.HookInfo{
+				{
+					Event:   "pre_tool",
+					Command: "echo pre",
+					Status:  "configured",
+					Source:  "local",
+					Enabled: true,
+				},
+			}
+		},
+		OnExit: func() {
+			closed = true
+		},
+	}
+
+	model, _, handled, err := registry.LoadModel(context.Background(), "/hooks", runtime)
+	if err != nil {
+		t.Fatalf("load model failed: %v", err)
+	}
+	if !handled || model == nil {
+		t.Fatalf("expected /hooks load model handled, handled=%t model=%T", handled, model)
+	}
+	view := model.View()
+	if !strings.Contains(view, "registry=hooks") || !strings.Contains(view, "pre_tool") {
+		t.Fatalf("unexpected hooks model view: %q", view)
+	}
+
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("expected esc to emit quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from hooks model")
+	}
+	if !closed {
+		t.Fatal("expected hooks model to trigger OnExit")
 	}
 }
 

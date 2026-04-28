@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"claude-code-go/internal/engine"
-	"claude-code-go/internal/infra/mcp"
-	mcptool "claude-code-go/internal/tool/mcp"
-	"claude-code-go/internal/services"
-	"claude-code-go/internal/tool"
+	"claude-go/internal/engine"
+	"claude-go/internal/infra/mcp"
+	mcptool "claude-go/internal/tool/mcp"
+	"claude-go/internal/services"
+	"claude-go/internal/tool"
 )
 
 func TestMCPServiceLifecycle(t *testing.T) {
@@ -20,9 +20,27 @@ func TestMCPServiceLifecycle(t *testing.T) {
 	configPath := filepath.Join(root, "mcp.json")
 	service := services.CreateMCPService(configPath)
 
+	// Add a mock server for testing (no default servers anymore)
+	service.AddServer(services.MCPServer{
+		Name:        "local-workspace",
+		Transport:   mcp.TransportSDK,
+		Enabled:     true,
+		Channel:     "local",
+		Description: "local workspace mcp server",
+		Tools: []mcp.Tool{
+			{Name: "workspace.echo", Response: "{value}", ReadOnly: true},
+		},
+		Resources: []mcp.Resource{
+			{URI: "mcp://local-workspace/readme", Content: "hello"},
+		},
+		Templates: []mcp.Template{
+			{URI: "mcp://local-workspace/{name}", Description: "templated"},
+		},
+	})
+
 	servers := service.Servers()
 	if len(servers) == 0 {
-		t.Fatalf("expected default mcp servers")
+		t.Fatalf("expected mock mcp servers after adding")
 	}
 
 	if ok := service.Connect("local-workspace"); !ok {

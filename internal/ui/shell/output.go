@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-code-go/internal/ui/components"
+	"claude-go/internal/ui/components"
 )
 
 // OutputConfig holds configuration for shell output rendering

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claude-code-go/internal/types"
+	"claude-go/internal/types"
 )
 
 // DirExistsGuidance is shared guidance text appended to each memory directory prompt.

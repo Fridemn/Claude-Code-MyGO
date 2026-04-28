@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/cli"
+	"claude-go/internal/cli"
 )
 
 func TestStructuredIORenderPromptAndReadLine(t *testing.T) {

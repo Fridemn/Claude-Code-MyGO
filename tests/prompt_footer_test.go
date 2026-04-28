@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/ui/input"
+	"claude-go/internal/ui/input"
 )
 
 func TestRenderPromptFooterStatusLeftHintsRight(t *testing.T) {

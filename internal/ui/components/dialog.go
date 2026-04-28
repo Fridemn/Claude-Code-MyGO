@@ -3,6 +3,8 @@ package components
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // DialogConfig holds configuration for rendering a dialog
@@ -15,6 +17,7 @@ type DialogConfig struct {
 	HideBorder    bool
 	HideInputHint bool
 	InputHint     string // Custom input hint (default: "Enter to confirm, Esc to cancel")
+	TopBorderOnly bool   // Only show top border (matches TS PermissionDialog)
 }
 
 // RGB represents an RGB color
@@ -22,20 +25,28 @@ type RGB struct {
 	R, G, B int
 }
 
-// Default dialog colors matching theme.go
+// Default dialog colors matching theme.ts dark theme
 var (
-	DialogColorPermission = RGB{177, 185, 249}
-	DialogColorClaude     = RGB{215, 119, 87}
-	DialogColorSuccess    = RGB{78, 186, 101}
-	DialogColorError      = RGB{255, 107, 128}
-	DialogColorWarning    = RGB{255, 193, 7}
-	DialogColorInfo       = RGB{115, 198, 255}
-	DialogColorMuted      = RGB{134, 145, 160}
-	DialogColorText       = RGB{255, 255, 255}
+	DialogColorPermission = RGB{177, 185, 249} // Light blue-purple (permission/suggestion)
+	DialogColorClaude     = RGB{215, 119, 87}  // Claude orange
+	DialogColorSuccess    = RGB{78, 186, 101}  // Bright green
+	DialogColorError      = RGB{255, 107, 128} // Bright red
+	DialogColorWarning    = RGB{255, 193, 7}   // Bright amber
+	DialogColorInfo       = RGB{177, 185, 249} // Same as permission (suggestion color)
+	DialogColorInactive   = RGB{153, 153, 153} // Light gray (inactive)
+	DialogColorText       = RGB{255, 255, 255} // White
+)
+
+// Figures symbols matching TS 'figures' package
+var (
+	FigurePointer = "›" // figures.pointer - selection indicator
+	FigureTick    = "✔" // figures.tick - checkbox selected
+	FigureArrowUp = "↑" // figures.arrowUp
+	FigureArrowDown = "↓" // figures.arrowDown
 )
 
 // RenderDialog renders a dialog box
-// Matches src/components/design-system/Dialog.tsx
+// Matches src/components/design-system/Dialog.tsx and PermissionDialog.tsx
 func RenderDialog(cfg DialogConfig) string {
 	if cfg.Width <= 0 {
 		cfg.Width = 60
@@ -50,6 +61,55 @@ func RenderDialog(cfg DialogConfig) string {
 	innerWidth := cfg.Width - 2
 
 	var lines []string
+
+	// Use lipgloss for consistent styling
+	borderColor := lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", cfg.Color.R, cfg.Color.G, cfg.Color.B))
+
+	// For top-border-only mode (matches TS PermissionDialog)
+	if cfg.TopBorderOnly {
+		// Top border with rounded corners, spanning full width
+		topBorder := "╭" + strings.Repeat("─", cfg.Width-2) + "╮"
+		lines = append(lines, lipgloss.NewStyle().Foreground(borderColor).Render(topBorder))
+
+		// Title area with padding
+		if cfg.Title != "" {
+			titleStyle := lipgloss.NewStyle().
+				Foreground(borderColor).
+				Bold(true).
+				PaddingLeft(1).PaddingRight(1)
+			titleLine := titleStyle.Render(cfg.Title)
+
+			// Add subtitle on same line if present
+			if cfg.Subtitle != "" {
+				subtitleStyle := lipgloss.NewStyle().Faint(true).PaddingLeft(1)
+				titleLine = titleLine + subtitleStyle.Render(cfg.Subtitle)
+			}
+			lines = append(lines, titleLine)
+		}
+
+		// Content lines with horizontal padding
+		contentStyle := lipgloss.NewStyle().PaddingLeft(1).PaddingRight(1)
+		for _, content := range cfg.Content {
+			wrapped := wrapText(content, innerWidth-2)
+			for _, line := range wrapped {
+				lines = append(lines, contentStyle.Render(line))
+			}
+		}
+
+		// Input hint - matches TS: <Text color="inactive" dimColor>
+		if !cfg.HideInputHint {
+			hint := cfg.InputHint
+			if hint == "" {
+				hint = "Enter to confirm · Esc to cancel"
+			}
+			// Use inactive color with dimmed style (matches TS QuestionView keyboard hint)
+			inactiveColor := lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", DialogColorInactive.R, DialogColorInactive.G, DialogColorInactive.B))
+			hintStyle := lipgloss.NewStyle().Foreground(inactiveColor).Faint(true).PaddingLeft(1).PaddingRight(1)
+			lines = append(lines, hintStyle.Render(hint))
+		}
+
+		return strings.Join(lines, "\n")
+	}
 
 	if !cfg.HideBorder {
 		// Top border with rounded corners
@@ -69,7 +129,7 @@ func RenderDialog(cfg DialogConfig) string {
 
 	// Subtitle (dimmed)
 	if cfg.Subtitle != "" {
-		subtitleLine := renderDimText(cfg.Subtitle)
+		subtitleLine := RenderDimText(cfg.Subtitle)
 		subtitlePadded := padToWidth(subtitleLine, innerWidth)
 		if !cfg.HideBorder {
 			lines = append(lines, renderLine(cfg.Color, "│")+subtitlePadded+renderLine(cfg.Color, "│"))
@@ -170,7 +230,8 @@ func renderColoredText(color RGB, text string, bold bool) string {
 	return fmt.Sprintf("\033[38;2;%d;%d;%dm%s\033[0m", color.R, color.G, color.B, text)
 }
 
-func renderDimText(text string) string {
+// RenderDimText renders text with dimmed style (matches TS: <Text dimColor>)
+func RenderDimText(text string) string {
 	return fmt.Sprintf("\033[2m%s\033[0m", text)
 }
 

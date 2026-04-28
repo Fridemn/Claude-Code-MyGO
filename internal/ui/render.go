@@ -3,6 +3,8 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -641,23 +643,44 @@ func renderGroupedToolUseBlockWithContext(width int, entry TranscriptEntry, ctx 
 			indicator + style(&dark.text, nil, summary, isInProgress),
 		}
 		// Add compact per-agent detail lines from grouped tool-use summaries.
-		// This is a lightweight parity step toward TS AgentProgressLine.
+		// Keep lines deduplicated and capped to avoid noisy grouped output.
+		seen := map[string]bool{}
+		detailCount := 0
+		const maxDetailLines = 4
 		for _, msg := range entry.Meta.GroupMessages {
 			if msg.Kind != "tool_use" || strings.TrimSpace(msg.Content) == "" {
 				continue
 			}
-			detail := truncateVisible(msg.Content, width-8)
+			detail, ok := normalizeAgentGroupedDetail(msg.Content)
+			if !ok {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(detail))
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			detailCount++
+			if detailCount > maxDetailLines {
+				continue
+			}
+			detail = truncateVisible(detail, width-8)
 			lines = append(lines, style(&dark.subtle, nil, "  ↳ "+detail, false))
+		}
+		if detailCount > maxDetailLines {
+			rest := detailCount - maxDetailLines
+			lines = append(lines, style(&dark.muted, nil, fmt.Sprintf("  ↳ +%d more", rest), false))
 		}
 		return strings.Join(lines, "\n")
 	}
 
-	// Default grouped format: "● ToolName (N operations)"
-
+	// Default grouped format with tool-aware operation label + latest hint.
 	label := indicator + style(&dark.text, nil, entry.ToolName, isInProgress)
-	opText := fmt.Sprintf("%d operations", count)
+	opText := groupedOperationText(entry.ToolName, count)
 	label += style(&dark.muted, nil, " ("+opText+")", false)
-
+	if hint, ok := groupedLatestHint(entry.ToolName, entry.Meta.GroupMessages); ok {
+		return label + "\n" + style(&dark.subtle, nil, "  ⎿ "+truncateVisible(hint, width-8), false)
+	}
 	return label
 }
 
@@ -667,6 +690,13 @@ func renderToolResultBlock(width int, entry TranscriptEntry, mode ViewMode, late
 	shouldShowFull := mode == ViewModeVerbose || mode == ViewModeTranscript || entry.UUID == latestBashOutputUUID
 
 	parsed := parseToolResultEnvelope(entry.Content)
+
+	// For Edit tool, always show diff preview (not just in verbose mode)
+	// Matches TS behavior where file edit shows diff in all modes
+	if entry.ToolName == "Edit" {
+		return renderEditToolResultWithDiff(width, parsed)
+	}
+
 	content := summarizeToolResult(entry.ToolName, parsed, width, shouldShowFull)
 
 	// Style based on success/error
@@ -679,6 +709,154 @@ func renderToolResultBlock(width int, entry TranscriptEntry, mode ViewMode, late
 	}
 
 	return style(color, nil, "  ⎿ "+content, false)
+}
+
+// renderEditToolResultWithDiff renders Edit tool result with diff preview
+// Shows diff in all modes, matching TS FileEditToolUpdatedMessage behavior
+func renderEditToolResultWithDiff(width int, parsed parsedToolResult) string {
+	obj := parseJSONMap(parsed.Body)
+	if len(obj) == 0 {
+		return style(&dark.muted, nil, "  ⎿ "+truncateToolContent(parsed.Body, width-4), false)
+	}
+
+	filePath := getString(obj, "filePath")
+	displayPath := displayFilePathForSummary(filePath)
+
+	// Build result with diff preview
+	var lines []string
+
+	// Count additions and removals from structuredPatch
+	patches := getArray(obj, "structuredPatch")
+	numAdditions := 0
+	numRemovals := 0
+	for _, patch := range patches {
+		patchMap, ok := patch.(map[string]any)
+		if !ok {
+			continue
+		}
+		patchLines := getArray(patchMap, "lines")
+		for _, l := range patchLines {
+			lineStr, ok := l.(string)
+			if !ok {
+				continue
+			}
+			if strings.HasPrefix(lineStr, "+") {
+				numAdditions++
+			} else if strings.HasPrefix(lineStr, "-") {
+				numRemovals++
+			}
+		}
+	}
+
+	// Header line with summary (matches TS behavior)
+	header := "Updated " + displayPath
+	if getBool(obj, "replaceAll") {
+		header = "Applied edits to " + displayPath
+	}
+	// Add line counts like TS: "Added X lines / Removed X lines"
+	if numAdditions > 0 || numRemovals > 0 {
+		var countParts []string
+		if numAdditions > 0 {
+			countParts = append(countParts, fmt.Sprintf("Added %d %s", numAdditions, pluralize(numAdditions, "line", "lines")))
+		}
+		if numRemovals > 0 {
+			countParts = append(countParts, fmt.Sprintf("Removed %d %s", numRemovals, pluralize(numRemovals, "line", "lines")))
+		}
+		header += " · " + strings.Join(countParts, " / ")
+	}
+
+	// Check for error status
+	if parsed.Status == "error" || strings.TrimSpace(parsed.Error) != "" {
+		lines = append(lines, style(&dark.error, nil, "  ⎿ "+truncateToolContent(parsed.Error, width-4), false))
+		return strings.Join(lines, "\n")
+	}
+
+	lines = append(lines, style(&dark.success, nil, "  ⎿ "+header, false))
+
+	// Render diff preview from structuredPatch with git-style background colors
+	if len(patches) > 0 {
+		// Limit hunks to avoid overwhelming output
+		maxHunks := 2
+		displayPatches := patches
+		if len(patches) > maxHunks {
+			displayPatches = patches[:maxHunks]
+		}
+
+		for _, patch := range displayPatches {
+			patchMap, ok := patch.(map[string]any)
+			if !ok {
+				continue
+			}
+			diffLines := renderStructuredPatchDiff(patchMap, width-8)
+			lines = append(lines, diffLines...)
+		}
+
+		if len(patches) > maxHunks {
+			lines = append(lines, style(&dark.muted, nil, "    … (more hunks)", false))
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// renderStructuredPatchDiff renders lines from a structured patch hunk with git-style backgrounds
+func renderStructuredPatchDiff(patch map[string]any, width int) []string {
+	var lines []string
+
+	patchLines, ok := patch["lines"].([]any)
+	if !ok {
+		return lines
+	}
+
+	// Limit display to avoid overwhelming output
+	maxLines := 15
+	displayLines := patchLines
+	if len(patchLines) > maxLines {
+		displayLines = patchLines[:maxLines]
+	}
+
+	for _, l := range displayLines {
+		lineStr, ok := l.(string)
+		if !ok {
+			continue
+		}
+		// Truncate long lines
+		if len(lineStr) > width {
+			lineStr = lineStr[:width-3] + "…"
+		}
+
+		// Apply git-style background colors based on prefix
+		if strings.HasPrefix(lineStr, "+") {
+			// Green background for additions
+			lines = append(lines, renderWithDiffBackground(40, 80, 50, "    "+lineStr))
+		} else if strings.HasPrefix(lineStr, "-") {
+			// Red background for deletions
+			lines = append(lines, renderWithDiffBackground(80, 40, 50, "    "+lineStr))
+		} else if strings.HasPrefix(lineStr, " ") {
+			lines = append(lines, style(&dark.muted, nil, "    "+lineStr, false))
+		} else {
+			lines = append(lines, style(&dark.muted, nil, "    "+lineStr, false))
+		}
+	}
+
+	if len(patchLines) > maxLines {
+		lines = append(lines, style(&dark.muted, nil, "    … (more changes)", false))
+	}
+
+	return lines
+}
+
+// renderWithDiffBackground renders text with a colored background (git diff style)
+func renderWithDiffBackground(r, g, b int, text string) string {
+	return fmt.Sprintf("\033[48;2;%d;%d;%dm\033[38;2;%d;%d;%dm%s\033[0m",
+		r, g, b, 255, 255, 255, text)
+}
+
+func getArray(m map[string]any, key string) []any {
+	if v, ok := m[key].([]any); ok {
+		return v
+	}
+	return nil
 }
 
 type parsedToolResult struct {
@@ -732,6 +910,9 @@ func summarizeToolResult(toolName string, parsed parsedToolResult, width int, fu
 	if full {
 		return truncateToolContent(parsed.Body, width-4)
 	}
+	if msg, ok := summarizeToolResultError(name, parsed); ok {
+		return msg
+	}
 	switch name {
 	case "Read":
 		return summarizeReadResult(parsed, width)
@@ -752,6 +933,148 @@ func summarizeToolResult(toolName string, parsed parsedToolResult, width int, fu
 	}
 }
 
+func summarizeToolResultError(toolName string, parsed parsedToolResult) (string, bool) {
+	if parsed.Status != "error" && strings.TrimSpace(parsed.Error) == "" {
+		return "", false
+	}
+	errText := strings.TrimSpace(parsed.Error)
+	if errText == "" {
+		errText = extractTagged(parsed.Body, "tool_use_error")
+	}
+	lower := strings.ToLower(errText)
+	switch toolName {
+	case "Read":
+		if strings.Contains(lower, "not found") {
+			return "File not found", true
+		}
+		return "Error reading file", true
+	case "Write":
+		return "Error writing file", true
+	case "Edit":
+		if strings.Contains(lower, "file has not been read yet") {
+			return "File must be read first", true
+		}
+		if strings.Contains(lower, "not found") {
+			return "File not found", true
+		}
+		return "Error editing file", true
+	case "Grep", "Glob":
+		if strings.Contains(lower, "not found") {
+			return "File not found", true
+		}
+		return "Error searching files", true
+	case "Bash", "PowerShell":
+		if strings.TrimSpace(errText) != "" {
+			return truncateToolContent(strings.Split(strings.TrimSpace(errText), "\n")[0], 96), true
+		}
+		return "Command failed", true
+	default:
+		return "", false
+	}
+}
+
+func extractTagged(raw, tag string) string {
+	if strings.TrimSpace(raw) == "" || strings.TrimSpace(tag) == "" {
+		return ""
+	}
+	open := "<" + tag + ">"
+	close := "</" + tag + ">"
+	start := strings.Index(raw, open)
+	if start < 0 {
+		return ""
+	}
+	start += len(open)
+	end := strings.Index(raw[start:], close)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(raw[start : start+end])
+}
+
+func normalizeAgentGroupedDetail(raw string) (string, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", false
+	}
+	left, right, ok := strings.Cut(s, ":")
+	if ok {
+		left = strings.TrimSpace(left)
+		right = strings.TrimSpace(right)
+		switch {
+		case left == "" && right == "":
+			return "", false
+		case left == "":
+			return right, true
+		case right == "":
+			return left, true
+		default:
+			return left + " · " + right, true
+		}
+	}
+	return s, true
+}
+
+func groupedOperationText(toolName string, count int) string {
+	if count < 1 {
+		count = 1
+	}
+	switch toolName {
+	case "Read":
+		return fmt.Sprintf("%d %s", count, pluralize(count, "read", "reads"))
+	case "Grep", "Glob":
+		return fmt.Sprintf("%d %s", count, pluralize(count, "search", "searches"))
+	case "Write", "Edit":
+		return fmt.Sprintf("%d %s", count, pluralize(count, "update", "updates"))
+	case "Bash", "PowerShell":
+		return fmt.Sprintf("%d %s", count, pluralize(count, "command", "commands"))
+	default:
+		return fmt.Sprintf("%d operations", count)
+	}
+}
+
+func groupedLatestHint(toolName string, group []TranscriptEntry) (string, bool) {
+	for i := len(group) - 1; i >= 0; i-- {
+		msg := group[i]
+		if msg.Kind != "tool_use" {
+			continue
+		}
+		hint := strings.TrimSpace(msg.Content)
+		if hint != "" {
+			return normalizeGroupedHint(toolName, hint), true
+		}
+	}
+	return "", false
+}
+
+func normalizeGroupedHint(toolName, raw string) string {
+	hint := strings.TrimSpace(raw)
+	if hint == "" {
+		return ""
+	}
+	switch toolName {
+	case "Read":
+		// Keep path prominent for read hints ("path · lines x-y" -> "path").
+		if left, _, ok := strings.Cut(hint, " · "); ok && strings.TrimSpace(left) != "" {
+			return strings.TrimSpace(left)
+		}
+		return hint
+	case "Grep", "Glob":
+		// Search hint should be quote-like for quick visual scanning.
+		if strings.HasPrefix(hint, "\"") || strings.HasPrefix(hint, "'") {
+			return hint
+		}
+		return "\"" + hint + "\""
+	case "Bash", "PowerShell":
+		// Match TS command-as-hint spirit.
+		if strings.HasPrefix(hint, "$ ") {
+			return hint
+		}
+		return "$ " + hint
+	default:
+		return hint
+	}
+}
+
 func summarizeReadResult(parsed parsedToolResult, width int) string {
 	obj := parseJSONMap(parsed.Body)
 	if len(obj) == 0 {
@@ -762,9 +1085,7 @@ func summarizeReadResult(parsed parsedToolResult, width int) string {
 	switch typ {
 	case "text":
 		numLines := getInt(file, "numLines")
-		if numLines > 0 {
-			return fmt.Sprintf("Read %d %s", numLines, pluralize(numLines, "line", "lines"))
-		}
+		return fmt.Sprintf("Read %d %s", numLines, pluralize(numLines, "line", "lines"))
 	case "image":
 		size := getInt(file, "originalSize")
 		if size > 0 {
@@ -776,7 +1097,7 @@ func summarizeReadResult(parsed parsedToolResult, width int) string {
 		if cells > 0 {
 			return fmt.Sprintf("Read %d %s", cells, pluralize(cells, "cell", "cells"))
 		}
-		return "Read notebook"
+		return "No cells found in notebook"
 	case "pdf":
 		size := getInt(file, "originalSize")
 		if size > 0 {
@@ -785,7 +1106,11 @@ func summarizeReadResult(parsed parsedToolResult, width int) string {
 		return "Read PDF"
 	case "parts":
 		count := getInt(file, "count")
+		size := getInt(file, "originalSize")
 		if count > 0 {
+			if size > 0 {
+				return fmt.Sprintf("Read %d %s (%s)", count, pluralize(count, "page", "pages"), formatBytes(size))
+			}
 			return fmt.Sprintf("Read %d %s", count, pluralize(count, "page", "pages"))
 		}
 	case "file_unchanged":
@@ -800,17 +1125,21 @@ func summarizeWriteResult(parsed parsedToolResult, width int) string {
 		return truncateToolContent(parsed.Body, width-4)
 	}
 	filePath := getString(obj, "filePath")
+	if isPlanPathForSummary(filePath) {
+		return "/plan to preview"
+	}
+	displayPath := displayFilePathForSummary(filePath)
 	content := getString(obj, "content")
 	lines := countLogicalLines(content)
 	verb := "Wrote"
 	if getString(obj, "type") == "update" {
 		verb = "Updated"
 	}
-	if filePath != "" && lines > 0 {
-		return fmt.Sprintf("%s %d %s to %s", verb, lines, pluralize(lines, "line", "lines"), filePath)
+	if displayPath != "" && lines > 0 {
+		return fmt.Sprintf("%s %d %s to %s", verb, lines, pluralize(lines, "line", "lines"), displayPath)
 	}
-	if filePath != "" {
-		return fmt.Sprintf("%s %s", verb, filePath)
+	if displayPath != "" {
+		return fmt.Sprintf("%s %s", verb, displayPath)
 	}
 	return truncateToolContent(parsed.Body, width-4)
 }
@@ -821,14 +1150,18 @@ func summarizeEditResult(parsed parsedToolResult, width int) string {
 		return truncateToolContent(parsed.Body, width-4)
 	}
 	filePath := getString(obj, "filePath")
+	if isPlanPathForSummary(filePath) {
+		return "/plan to preview"
+	}
+	displayPath := displayFilePathForSummary(filePath)
 	replaceAll := getBool(obj, "replaceAll")
-	if filePath == "" {
+	if displayPath == "" {
 		return "Applied edit"
 	}
 	if replaceAll {
-		return "Applied edits to " + filePath
+		return "Applied edits to " + displayPath
 	}
-	return "Updated " + filePath
+	return "Updated " + displayPath
 }
 
 func summarizeGrepResult(parsed parsedToolResult, width int) string {
@@ -844,23 +1177,28 @@ func summarizeGrepResult(parsed parsedToolResult, width int) string {
 		if numMatches > 0 {
 			return fmt.Sprintf("Found %d %s in %d %s", numMatches, pluralize(numMatches, "match", "matches"), numFiles, pluralize(numFiles, "file", "files"))
 		}
+		if numFiles > 0 {
+			return fmt.Sprintf("Found 0 matches in %d %s", numFiles, pluralize(numFiles, "file", "files"))
+		}
+		return "Found 0 matches"
 	case "content":
 		numLines := getInt(obj, "numLines")
 		if numLines > 0 {
 			return fmt.Sprintf("Found %d matching %s", numLines, pluralize(numLines, "line", "lines"))
 		}
+		return "Found 0 matching lines"
 	default:
 		if numFiles > 0 {
 			return fmt.Sprintf("Found %d %s", numFiles, pluralize(numFiles, "file", "files"))
 		}
+		return "Found 0 files"
 	}
-	return truncateToolContent(parsed.Body, width-4)
 }
 
 func summarizeGlobResult(parsed parsedToolResult, width int) string {
 	body := strings.TrimSpace(parsed.Body)
 	if body == "" || body == "No files found" {
-		return "No files found"
+		return "Found 0 files"
 	}
 	lines := splitLinesRaw(body)
 	count := 0
@@ -874,7 +1212,7 @@ func summarizeGlobResult(parsed parsedToolResult, width int) string {
 	if count > 0 {
 		return fmt.Sprintf("Found %d %s", count, pluralize(count, "file", "files"))
 	}
-	return truncateToolContent(parsed.Body, width-4)
+	return "Found 0 files"
 }
 
 func summarizeBashResult(parsed parsedToolResult, width int) string {
@@ -882,11 +1220,17 @@ func summarizeBashResult(parsed parsedToolResult, width int) string {
 	if len(obj) == 0 {
 		return truncateToolContent(parsed.Body, width-4)
 	}
+	if getBool(obj, "isImage") {
+		return "[Image data detected and sent to Claude]"
+	}
 	if id := getString(obj, "backgroundTaskId"); id != "" {
 		return "Started background task " + id
 	}
 	stdout := getString(obj, "stdout")
 	stderr := getString(obj, "stderr")
+	stderr = removeTaggedSection(stderr, "sandbox_violations")
+	stderr, _ = stripCwdResetWarning(stderr)
+	returnCodeInterpretation := getString(obj, "returnCodeInterpretation")
 	if parsed.Status == "error" && strings.TrimSpace(stderr) != "" {
 		return truncateToolContent(strings.Split(strings.TrimSpace(stderr), "\n")[0], width-4)
 	}
@@ -894,10 +1238,13 @@ func summarizeBashResult(parsed parsedToolResult, width int) string {
 		return "Command interrupted"
 	}
 	if strings.TrimSpace(stdout) == "" && strings.TrimSpace(stderr) == "" {
-		if getBool(obj, "noOutputExpected") {
-			return "Command completed"
+		if strings.TrimSpace(returnCodeInterpretation) != "" {
+			return returnCodeInterpretation
 		}
-		return "No output"
+		if getBool(obj, "noOutputExpected") {
+			return "Done"
+		}
+		return "(No output)"
 	}
 	if strings.TrimSpace(stderr) != "" && strings.TrimSpace(stdout) == "" {
 		return truncateToolContent(strings.Split(strings.TrimSpace(stderr), "\n")[0], width-4)
@@ -909,6 +1256,77 @@ func summarizeBashResult(parsed parsedToolResult, width int) string {
 	return truncateToolContent(strings.TrimSpace(stdout), width-4)
 }
 
+func removeTaggedSection(raw, tag string) string {
+	tag = strings.TrimSpace(tag)
+	if tag == "" || strings.TrimSpace(raw) == "" {
+		return raw
+	}
+	open := "<" + tag + ">"
+	close := "</" + tag + ">"
+	start := strings.Index(raw, open)
+	if start < 0 {
+		return raw
+	}
+	end := strings.Index(raw[start+len(open):], close)
+	if end < 0 {
+		return raw
+	}
+	end += start + len(open) + len(close)
+	return strings.TrimSpace(raw[:start] + raw[end:])
+}
+
+func stripCwdResetWarning(stderr string) (string, bool) {
+	const marker = "Shell cwd was reset to "
+	lines := splitLinesRaw(stderr)
+	if len(lines) == 0 {
+		return strings.TrimSpace(stderr), false
+	}
+	out := make([]string, 0, len(lines))
+	found := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, marker) {
+			found = true
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n")), found
+}
+
+func isPlanPathForSummary(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	plansDir := filepath.Join(home, ".claude", "plans")
+	cleanPath := filepath.Clean(path)
+	cleanPlansDir := filepath.Clean(plansDir)
+	return strings.HasPrefix(cleanPath, cleanPlansDir)
+}
+
+func displayFilePathForSummary(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	cwd, err := os.Getwd()
+	if err != nil || strings.TrimSpace(cwd) == "" {
+		return path
+	}
+	absPath := path
+	if !filepath.IsAbs(absPath) {
+		absPath = filepath.Join(cwd, absPath)
+	}
+	if rel, relErr := filepath.Rel(cwd, absPath); relErr == nil && rel != "" && rel != "." {
+		return rel
+	}
+	return path
+}
+
 func summarizeAgentResult(parsed parsedToolResult, width int) string {
 	obj := parseJSONMap(parsed.Body)
 	if len(obj) == 0 {
@@ -916,23 +1334,96 @@ func summarizeAgentResult(parsed parsedToolResult, width int) string {
 	}
 	status := getString(obj, "status")
 	agentType := getString(obj, "agent_type")
-	if status == "async_launched" {
-		if agentType != "" {
-			return "Launched " + agentType + " agent"
+	if agentType == "" {
+		agentType = getString(obj, "subagent_type")
+	}
+	if agentType == "" {
+		agentType = "Agent"
+	}
+	if status == "remote_launched" {
+		taskID := getString(obj, "taskId")
+		if taskID == "" {
+			taskID = getString(obj, "task_id")
 		}
-		return "Launched agent task"
+		if taskID != "" {
+			return "Remote agent launched · " + taskID
+		}
+		return "Remote agent launched"
+	}
+	if status == "async_launched" {
+		return "Backgrounded agent"
 	}
 	if status == "completed" {
+		toolUses := getInt(obj, "totalToolUseCount")
+		tokens := getInt(obj, "totalTokens")
+		durationMs := getInt(obj, "totalDurationMs")
+		_, hasToolUses := obj["totalToolUseCount"]
+		_, hasTokens := obj["totalTokens"]
+		_, hasDuration := obj["totalDurationMs"]
+		if hasToolUses || hasTokens || hasDuration {
+			parts := make([]string, 0, 3)
+			parts = append(parts, fmt.Sprintf("%d %s", toolUses, pluralize(toolUses, "tool use", "tool uses")))
+			if hasTokens {
+				parts = append(parts, fmt.Sprintf("%s tokens", formatWithCommas(tokens)))
+			}
+			if hasDuration && durationMs > 0 {
+				parts = append(parts, formatElapsedMs(durationMs))
+			}
+			if len(parts) > 0 {
+				return "Done (" + strings.Join(parts, " · ") + ")"
+			}
+		}
 		summary := getString(obj, "summary")
 		if strings.TrimSpace(summary) != "" {
 			return truncateToolContent(summary, width-4)
 		}
-		if agentType != "" {
-			return agentType + " agent completed"
-		}
-		return "Agent completed"
+		return agentType + " agent completed"
 	}
 	return truncateToolContent(parsed.Body, width-4)
+}
+
+func formatElapsedMs(ms int) string {
+	if ms <= 0 {
+		return "0s"
+	}
+	seconds := ms / 1000
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	rem := seconds % 60
+	if rem == 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	return fmt.Sprintf("%dm%ds", minutes, rem)
+}
+
+func formatWithCommas(n int) string {
+	s := strconv.Itoa(n)
+	if len(s) <= 3 {
+		return s
+	}
+	sign := ""
+	if strings.HasPrefix(s, "-") {
+		sign = "-"
+		s = s[1:]
+	}
+	rem := len(s) % 3
+	var b strings.Builder
+	b.WriteString(sign)
+	if rem > 0 {
+		b.WriteString(s[:rem])
+		if len(s) > rem {
+			b.WriteString(",")
+		}
+	}
+	for i := rem; i < len(s); i += 3 {
+		b.WriteString(s[i : i+3])
+		if i+3 < len(s) {
+			b.WriteString(",")
+		}
+	}
+	return b.String()
 }
 
 func truncateToolContent(content string, width int) string {
@@ -943,11 +1434,7 @@ func truncateToolContent(content string, width int) string {
 	if content == "" {
 		return ""
 	}
-	out := truncateVisible(content, width)
-	if visibleWidth(content) > width {
-		out += "…"
-	}
-	return out
+	return truncateVisible(content, width)
 }
 
 func parseJSONMap(raw string) map[string]any {
@@ -1214,21 +1701,39 @@ func renderCollapsedBlockWithContext(width int, entry TranscriptEntry, ctx Rende
 }
 
 // renderThinkingBlock renders a thinking/redacted_thinking entry
+// Matches TS AssistantThinkingMessage.tsx behavior
 func renderThinkingBlock(width int, entry TranscriptEntry, mode ViewMode) string {
+	// TS normal mode: shows "∴ Thinking" + "Ctrl+O to expand" (collapsed)
+	// TS transcript/verbose mode: shows full thinking content
+	// Ref: src/components/messages/AssistantThinkingMessage.tsx:39-57
+
 	if mode == ViewModeNormal {
-		return "" // Hidden in normal mode
+		// Show collapsed label in normal mode (TS line 40-47)
+		label := style(&dark.subtle, nil, "∴ Thinking", false)
+		hint := style(&dark.subtle, nil, " (Ctrl+O to expand)", false)
+		return label + hint
 	}
 
-	// In verbose/transcript mode, show thinking with different styling
-	var label string
+	// In verbose/transcript mode, show full thinking content (TS line 58+)
 	if entry.Kind == "redacted_thinking" {
-		label = style(&dark.subtle, nil, "  [thinking…]", false)
-	} else {
-		// Truncate thinking content
-		content := truncateVisible(entry.Content, width-8)
-		label = style(&dark.subtle, nil, "  [thinking: "+content+"]", false)
+		// Redacted thinking shows just label
+		label := style(&dark.subtle, nil, "∴ Thinking…", false)
+		return label
 	}
-	return label
+
+	// Full thinking: label + content
+	label := style(&dark.subtle, nil, "∴ Thinking…", false)
+	// Render thinking content with markdown (TS uses Markdown component)
+	// For now, show raw content indented
+	lines := strings.Split(entry.Content, "\n")
+	var rendered []string
+	rendered = append(rendered, label)
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			rendered = append(rendered, style(&dark.subtle, nil, "  "+line, false))
+		}
+	}
+	return strings.Join(rendered, "\n")
 }
 
 // pluralize returns singular or plural form

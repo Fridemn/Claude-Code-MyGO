@@ -2,17 +2,19 @@ package tests
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/engine"
-	"claude-code-go/internal/session"
-	"claude-code-go/internal/tool"
-	"claude-code-go/internal/types"
+	"claude-go/internal/config"
+	"claude-go/internal/engine"
+	"claude-go/internal/session"
+	"claude-go/internal/tool"
+	"claude-go/internal/tool/repl"
+	"claude-go/internal/types"
 )
 
 func TestEngineSubmit_ToolLoop(t *testing.T) {
@@ -141,7 +143,7 @@ func TestEngineSubmit_NativeToolLoop(t *testing.T) {
 					{
 						ID:        "call_1",
 						Name:      "echo_tool",
-						Arguments: `{"value":"hello"}`,
+						Arguments: json.RawMessage(`{"value":"hello"}`),
 					},
 				},
 			},
@@ -212,7 +214,7 @@ func TestEngineSubmit_NativeToolLoopWithoutProviderIDs(t *testing.T) {
 				ToolCalls: []types.ToolCall{
 					{
 						Name:      "echo_tool",
-						Arguments: `{"value":"hello"}`,
+						Arguments: json.RawMessage(`{"value":"hello"}`),
 					},
 				},
 			},
@@ -306,6 +308,546 @@ func TestEngineSubmit_ToolLoopUsesConfiguredMaxTurns(t *testing.T) {
 	}
 }
 
+func TestEngineSubmit_RetriesEmptyAssistantAfterToolResult(t *testing.T) {
+	t.Parallel()
+
+	sessions, err := session.CreateManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new session manager: %v", err)
+	}
+
+	registry := tool.EmptyRegistry()
+	registry.Register(testEchoTool{})
+	provider := &scriptedProvider{
+		responses: []engine.Response{
+			{
+				ToolCalls: []types.ToolCall{
+					{
+						ID:        "call_1",
+						Name:      "echo_tool",
+						Arguments: json.RawMessage(`{"value":"hello"}`),
+					},
+				},
+			},
+			{},
+			{Text: "final answer"},
+		},
+	}
+
+	eng, err := engine.Create(context.Background(), engine.Options{
+		Config: config.Config{
+			Model:        "test-model",
+			SystemPrompt: "system prompt",
+			MaxTurns:     8,
+		},
+		Provider: provider,
+		Tools:    registry,
+		Sessions: sessions,
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	resp, err := eng.Submit(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if resp.Text != "final answer" {
+		t.Fatalf("unexpected final response: %q", resp.Text)
+	}
+	if provider.calls != 3 {
+		t.Fatalf("expected 3 provider calls, got %d", provider.calls)
+	}
+
+	for _, msg := range eng.Messages() {
+		if msg.Role == types.RoleAssistant && strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 {
+			t.Fatalf("unexpected empty assistant message persisted: %#v", msg)
+		}
+	}
+}
+
+func TestEngineSubmit_ErrorsAfterConsecutiveEmptyAssistantPostToolResponses(t *testing.T) {
+	t.Parallel()
+
+	sessions, err := session.CreateManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new session manager: %v", err)
+	}
+
+	registry := tool.EmptyRegistry()
+	registry.Register(testEchoTool{})
+	provider := &scriptedProvider{
+		responses: []engine.Response{
+			{
+				ToolCalls: []types.ToolCall{
+					{
+						ID:        "call_1",
+						Name:      "echo_tool",
+						Arguments: json.RawMessage(`{"value":"hello"}`),
+					},
+				},
+			},
+			{},
+			{},
+		},
+	}
+
+	eng, err := engine.Create(context.Background(), engine.Options{
+		Config: config.Config{
+			Model:        "test-model",
+			SystemPrompt: "system prompt",
+			MaxTurns:     8,
+		},
+		Provider: provider,
+		Tools:    registry,
+		Sessions: sessions,
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	_, err = eng.Submit(context.Background(), "hi")
+	if err == nil {
+		t.Fatal("expected error for repeated empty assistant responses after tool execution")
+	}
+	if !strings.Contains(err.Error(), "empty assistant response after tool execution") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.calls != 3 {
+		t.Fatalf("expected 3 provider calls, got %d", provider.calls)
+	}
+
+	for _, msg := range eng.Messages() {
+		if msg.Role == types.RoleAssistant && strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 {
+			t.Fatalf("unexpected empty assistant message persisted: %#v", msg)
+		}
+	}
+}
+
+func TestEngineSubmitStream_RetriesEmptyAssistantAfterToolResult(t *testing.T) {
+	t.Parallel()
+
+	sessions, err := session.CreateManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new session manager: %v", err)
+	}
+
+	registry := tool.EmptyRegistry()
+	registry.Register(testEchoTool{})
+	provider := &scriptedStreamingProvider{
+		responses: []engine.Response{
+			{
+				ToolCalls: []types.ToolCall{
+					{
+						ID:        "call_1",
+						Name:      "echo_tool",
+						Arguments: json.RawMessage(`{"value":"hello"}`),
+					},
+				},
+			},
+			{},
+			{Text: "final answer"},
+		},
+	}
+
+	eng, err := engine.Create(context.Background(), engine.Options{
+		Config: config.Config{
+			Model:        "test-model",
+			SystemPrompt: "system prompt",
+			MaxTurns:     8,
+		},
+		Provider: provider,
+		Tools:    registry,
+		Sessions: sessions,
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	resp, err := eng.SubmitStream(context.Background(), "hi", nil)
+	if err != nil {
+		t.Fatalf("submit stream: %v", err)
+	}
+	if resp.Text != "final answer" {
+		t.Fatalf("unexpected final response: %q", resp.Text)
+	}
+	if provider.calls != 3 {
+		t.Fatalf("expected 3 provider calls, got %d", provider.calls)
+	}
+
+	for _, msg := range eng.Messages() {
+		if msg.Role == types.RoleAssistant && strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 {
+			t.Fatalf("unexpected empty assistant message persisted: %#v", msg)
+		}
+	}
+}
+
+func TestEngineSubmitStream_EmitsToolLifecycleChunks(t *testing.T) {
+	t.Parallel()
+
+	sessions, err := session.CreateManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new session manager: %v", err)
+	}
+
+	registry := tool.EmptyRegistry()
+	registry.Register(testEchoTool{})
+	provider := &scriptedStreamingProvider{
+		responses: []engine.Response{
+			{
+				ToolCalls: []types.ToolCall{
+					{
+						ID:        "call_1",
+						Name:      "echo_tool",
+						Arguments: json.RawMessage(`{"value":"hello"}`),
+					},
+				},
+			},
+			{Text: "final answer"},
+		},
+	}
+
+	eng, err := engine.Create(context.Background(), engine.Options{
+		Config: config.Config{
+			Model:        "test-model",
+			SystemPrompt: "system prompt",
+			MaxTurns:     8,
+		},
+		Provider: provider,
+		Tools:    registry,
+		Sessions: sessions,
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	var seenToolStart, seenToolDone bool
+	resp, err := eng.SubmitStream(context.Background(), "hi", func(chunk engine.StreamChunk) error {
+		if chunk.Status == "Running tool: echo_tool" && len(chunk.ToolCalls) > 0 {
+			seenToolStart = true
+		}
+		if chunk.Status == "Tool completed: echo_tool" && chunk.ToolCallID == "call_1" && chunk.ToolResult == "ok" {
+			seenToolDone = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("submit stream: %v", err)
+	}
+	if resp.Text != "final answer" {
+		t.Fatalf("unexpected final response: %q", resp.Text)
+	}
+	if !seenToolStart {
+		t.Fatalf("expected tool start lifecycle chunk")
+	}
+	if !seenToolDone {
+		t.Fatalf("expected tool completion lifecycle chunk")
+	}
+}
+
+func TestEngineSubmitStream_REPLProgressUsesInnerPrimitiveMetadata(t *testing.T) {
+	t.Setenv("CLAUDE_REPL_MODE", "1")
+	t.Setenv("CLAUDE_CODE_REPL", "")
+
+	sessions, err := session.CreateManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new session manager: %v", err)
+	}
+
+	registry := tool.EmptyRegistry()
+	registry.Register(repl.REPLTool{})
+	provider := &scriptedStreamingProvider{
+		responses: []engine.Response{
+			{
+				ToolCalls: []types.ToolCall{
+					{
+						ID:        "repl_call_1",
+						Name:      "REPL",
+						Arguments: json.RawMessage(`{"script":"Read({\"file_path\":\"src/main.go\"})"}`),
+					},
+				},
+			},
+			{Text: "done"},
+		},
+	}
+
+	eng, err := engine.Create(context.Background(), engine.Options{
+		Config: config.Config{
+			Model:        "test-model",
+			SystemPrompt: "system prompt",
+			MaxTurns:     8,
+		},
+		Provider: provider,
+		Tools:    registry,
+		Sessions: sessions,
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	resp, err := eng.SubmitStream(context.Background(), "hi", nil)
+	if err != nil {
+		t.Fatalf("submit stream: %v", err)
+	}
+	if resp.Text != "done" {
+		t.Fatalf("unexpected final response: %q", resp.Text)
+	}
+
+	var startProgressFound bool
+	for _, msg := range eng.Messages() {
+		if msg.Type != types.MessageTypeProgress || msg.ToolCallID != "repl_call_1" {
+			continue
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(msg.Content), &payload); err != nil {
+			t.Fatalf("invalid progress payload: %v", err)
+		}
+		phase, _ := payload["phase"].(string)
+		if phase != "start" {
+			continue
+		}
+		startProgressFound = true
+
+		if toolName, _ := payload["toolName"].(string); toolName != "Read" {
+			t.Fatalf("expected progress toolName Read, got %q", toolName)
+		}
+		toolInput, _ := payload["toolInput"].(map[string]any)
+		if filePath, _ := toolInput["file_path"].(string); filePath != "src/main.go" {
+			t.Fatalf("expected progress toolInput.file_path=src/main.go, got %#v", toolInput["file_path"])
+		}
+	}
+
+	if !startProgressFound {
+		t.Fatal("expected REPL start progress message")
+	}
+}
+
+func TestEngineContinueStream_UsesExistingMessagesWithoutAppendingUserInput(t *testing.T) {
+	t.Parallel()
+
+	sessions, err := session.CreateManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new session manager: %v", err)
+	}
+
+	provider := &scriptedStreamingProvider{
+		responses: []engine.Response{
+			{Text: "acknowledged"},
+		},
+	}
+
+	eng, err := engine.Create(context.Background(), engine.Options{
+		Config: config.Config{
+			Model:        "test-model",
+			SystemPrompt: "system prompt",
+			MaxTurns:     8,
+		},
+		Provider: provider,
+		Tools:    tool.EmptyRegistry(),
+		Sessions: sessions,
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	seed := []types.Message{
+		{
+			Role:      types.RoleSystem,
+			Content:   "system prompt",
+			Timestamp: timeNowForTest(),
+		},
+		{
+			Role:                      types.RoleSystem,
+			Type:                      types.SystemSubtypeLocalCommand,
+			Content:                   "<local-command-stdout>hidden transcript-only</local-command-stdout>",
+			IsVisibleInTranscriptOnly: true,
+			Timestamp:                 timeNowForTest(),
+		},
+		{
+			Role:      types.RoleUser,
+			Content:   "meta follow-up context",
+			IsMeta:    true,
+			Timestamp: timeNowForTest(),
+		},
+	}
+	eng.ReplaceMessages(seed)
+
+	resp, err := eng.ContinueStream(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("continue stream: %v", err)
+	}
+	if resp.Text != "acknowledged" {
+		t.Fatalf("unexpected final response: %q", resp.Text)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("expected 1 provider call, got %d", provider.calls)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected one captured request, got %d", len(provider.requests))
+	}
+	reqMessages := provider.requests[0].Messages
+	if len(reqMessages) != 2 {
+		t.Fatalf("expected transcript-only system local command to be excluded, got %d messages", len(reqMessages))
+	}
+	if reqMessages[len(reqMessages)-1].Role != types.RoleUser || reqMessages[len(reqMessages)-1].Content != "meta follow-up context" || !reqMessages[len(reqMessages)-1].IsMeta {
+		t.Fatalf("unexpected tail request message: %#v", reqMessages[len(reqMessages)-1])
+	}
+	for _, msg := range reqMessages {
+		if msg.Type == types.SystemSubtypeLocalCommand {
+			t.Fatalf("expected local_command transcript-only message to be excluded from model request: %#v", reqMessages)
+		}
+	}
+
+	all := eng.Messages()
+	if len(all) != len(seed)+1 {
+		t.Fatalf("expected one assistant message appended, got %d total", len(all))
+	}
+	if all[len(all)-1].Role != types.RoleAssistant || all[len(all)-1].Content != "acknowledged" {
+		t.Fatalf("unexpected final assistant message: %#v", all[len(all)-1])
+	}
+}
+
+func TestEngineContinueStream_FiltersProgressMessagesFromModelRequest(t *testing.T) {
+	t.Parallel()
+
+	sessions, err := session.CreateManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new session manager: %v", err)
+	}
+
+	provider := &scriptedStreamingProvider{
+		responses: []engine.Response{
+			{Text: "acknowledged"},
+		},
+	}
+
+	eng, err := engine.Create(context.Background(), engine.Options{
+		Config: config.Config{
+			Model:        "test-model",
+			SystemPrompt: "system prompt",
+			MaxTurns:     8,
+		},
+		Provider: provider,
+		Tools:    tool.EmptyRegistry(),
+		Sessions: sessions,
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	seed := []types.Message{
+		{
+			Role:      types.RoleSystem,
+			Content:   "system prompt",
+			Timestamp: timeNowForTest(),
+		},
+		{
+			Type:       types.MessageTypeProgress,
+			Role:       types.RoleSystem,
+			ToolCallID: "repl-call-1",
+			Content:    `{"type":"repl_tool_call","phase":"start","toolName":"REPL"}`,
+			Timestamp:  timeNowForTest(),
+		},
+		{
+			Role:      types.RoleUser,
+			Content:   "meta follow-up context",
+			IsMeta:    true,
+			Timestamp: timeNowForTest(),
+		},
+	}
+	eng.ReplaceMessages(seed)
+
+	resp, err := eng.ContinueStream(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("continue stream: %v", err)
+	}
+	if resp.Text != "acknowledged" {
+		t.Fatalf("unexpected final response: %q", resp.Text)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected one captured request, got %d", len(provider.requests))
+	}
+	reqMessages := provider.requests[0].Messages
+	if len(reqMessages) != 2 {
+		t.Fatalf("expected progress message to be excluded, got %d messages", len(reqMessages))
+	}
+	for _, msg := range reqMessages {
+		if msg.Type == types.MessageTypeProgress || msg.Role == types.MessageTypeProgress {
+			t.Fatalf("expected progress message to be excluded from model request: %#v", reqMessages)
+		}
+	}
+}
+
+func TestEngineContinueStream_FiltersVirtualMessagesFromModelRequest(t *testing.T) {
+	t.Parallel()
+
+	sessions, err := session.CreateManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new session manager: %v", err)
+	}
+
+	provider := &scriptedStreamingProvider{
+		responses: []engine.Response{
+			{Text: "acknowledged"},
+		},
+	}
+
+	eng, err := engine.Create(context.Background(), engine.Options{
+		Config: config.Config{
+			Model:        "test-model",
+			SystemPrompt: "system prompt",
+			MaxTurns:     8,
+		},
+		Provider: provider,
+		Tools:    tool.EmptyRegistry(),
+		Sessions: sessions,
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	seed := []types.Message{
+		{
+			Role:      types.RoleSystem,
+			Content:   "system prompt",
+			Timestamp: timeNowForTest(),
+		},
+		{
+			Role:      types.RoleAssistant,
+			Content:   "<virtual tool_use>",
+			IsVirtual: true,
+			Timestamp: timeNowForTest(),
+		},
+		{
+			Role:      types.RoleUser,
+			Content:   "follow-up",
+			Timestamp: timeNowForTest(),
+		},
+	}
+	eng.ReplaceMessages(seed)
+
+	resp, err := eng.ContinueStream(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("continue stream: %v", err)
+	}
+	if resp.Text != "acknowledged" {
+		t.Fatalf("unexpected final response: %q", resp.Text)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected one captured request, got %d", len(provider.requests))
+	}
+	reqMessages := provider.requests[0].Messages
+	if len(reqMessages) != 2 {
+		t.Fatalf("expected virtual message to be excluded, got %d", len(reqMessages))
+	}
+	for _, msg := range reqMessages {
+		if msg.IsVirtual {
+			t.Fatalf("expected virtual message to be excluded from model request: %#v", reqMessages)
+		}
+	}
+}
+
 type scriptedProvider struct {
 	responses []engine.Response
 	calls     int
@@ -319,6 +861,50 @@ func (p *scriptedProvider) Complete(_ context.Context, req engine.Request) (engi
 	}
 	resp := p.responses[p.calls]
 	p.calls++
+	return resp, nil
+}
+
+type scriptedStreamingProvider struct {
+	responses []engine.Response
+	calls     int
+	requests  []engine.Request
+}
+
+func (p *scriptedStreamingProvider) Complete(_ context.Context, req engine.Request) (engine.Response, error) {
+	p.requests = append(p.requests, req)
+	if p.calls >= len(p.responses) {
+		return engine.Response{Text: "unexpected extra call"}, nil
+	}
+	resp := p.responses[p.calls]
+	p.calls++
+	return resp, nil
+}
+
+func (p *scriptedStreamingProvider) CompleteStream(_ context.Context, req engine.Request, onChunk func(engine.StreamChunk) error) (engine.Response, error) {
+	p.requests = append(p.requests, req)
+	if p.calls >= len(p.responses) {
+		return engine.Response{Text: "unexpected extra call"}, nil
+	}
+	resp := p.responses[p.calls]
+	p.calls++
+
+	if onChunk != nil {
+		if strings.TrimSpace(resp.Text) != "" {
+			if err := onChunk(engine.StreamChunk{Text: resp.Text}); err != nil {
+				return engine.Response{}, err
+			}
+		}
+		if len(resp.ToolCalls) > 0 {
+			specs, err := tool.ParseNativeCalls(resp.ToolCalls)
+			if err != nil {
+				return engine.Response{}, err
+			}
+			if err := onChunk(engine.StreamChunk{ToolCalls: specs}); err != nil {
+				return engine.Response{}, err
+			}
+		}
+	}
+
 	return resp, nil
 }
 
@@ -408,7 +994,7 @@ func TestEngineSubmit_TrimHistoryKeepsWholeUserTurns(t *testing.T) {
 				{
 					ID:        "call_old",
 					Name:      "echo_tool",
-					Arguments: `{"value":"old"}`,
+					Arguments: json.RawMessage(`{"value":"old"}`),
 				},
 			},
 			Timestamp: timeNowForTest(),

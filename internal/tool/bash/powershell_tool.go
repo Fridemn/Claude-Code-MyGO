@@ -1,7 +1,7 @@
 package bash
 
 import (
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 	"context"
 	"fmt"
 	"os"
@@ -97,9 +97,11 @@ func (PowerShellTool) Call(ctx context.Context, in tool.Input, rt tool.Runtime) 
 
 	// Validate command for security issues
 	if securityErr := validatePowerShellSecurity(command); securityErr != nil {
+		errMsg := securityErr.Error()
 		return tool.Result{
+			Error: errMsg,
 			Content: PowerShellOutput{
-				Stderr:      securityErr.Error(),
+				Stderr:      errMsg,
 				Interrupted: false,
 			},
 		}, nil
@@ -107,9 +109,11 @@ func (PowerShellTool) Call(ctx context.Context, in tool.Input, rt tool.Runtime) 
 
 	// Check for blocked sleep patterns (PowerShell equivalent)
 	if blockedPattern := detectBlockedPowerShellSleepPattern(command); blockedPattern != "" {
+		errMsg := fmt.Sprintf("Blocked: %s. Run blocking commands in the background with run_in_background: true.", blockedPattern)
 		return tool.Result{
+			Error: errMsg,
 			Content: PowerShellOutput{
-				Stderr:      fmt.Sprintf("Blocked: %s. Run blocking commands in the background with run_in_background: true.", blockedPattern),
+				Stderr:      errMsg,
 				Interrupted: false,
 			},
 		}, nil
@@ -118,9 +122,11 @@ func (PowerShellTool) Call(ctx context.Context, in tool.Input, rt tool.Runtime) 
 	// Check permissions
 	permResult := checkPowerShellPermission(command, description)
 	if !permResult.Allowed {
+		errMsg := fmt.Sprintf("permission denied: %s", permResult.Reason)
 		return tool.Result{
+			Error: errMsg,
 			Content: PowerShellOutput{
-				Stderr:      fmt.Sprintf("permission denied: %s", permResult.Reason),
+				Stderr:      errMsg,
 				Interrupted: false,
 			},
 		}, nil

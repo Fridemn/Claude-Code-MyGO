@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-code-go/internal/task"
-	"claude-code-go/internal/tool"
+	"claude-go/internal/task"
+	"claude-go/internal/tool"
 )
 
 // ============== TaskCreate Tool ==============

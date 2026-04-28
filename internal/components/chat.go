@@ -1,9 +1,9 @@
 package components
 
 import (
-	"claude-code-go/internal/bootstrap"
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/ui"
+	"claude-go/internal/bootstrap"
+	"claude-go/internal/config"
+	"claude-go/internal/ui"
 	"time"
 )
 
@@ -43,6 +43,8 @@ type ChatProps struct {
 	Teammates            []ui.TeammateSpinnerNode
 	TeammateLeaderVerb   string
 	TeammateLeaderTokens int
+	PermissionMode       string
+	FooterRightHint      string
 	// InProgressToolIDs tracks tool_use IDs that are currently executing
 	InProgressToolIDs map[string]bool
 }
@@ -82,6 +84,8 @@ func (a *ChatApp) Render(props ChatProps) string {
 		Teammates:            props.Teammates,
 		TeammateLeaderVerb:   props.TeammateLeaderVerb,
 		TeammateLeaderTokens: props.TeammateLeaderTokens,
+		PermissionMode:       props.PermissionMode,
+		FooterRightHint:      props.FooterRightHint,
 		InProgressToolIDs:    props.InProgressToolIDs,
 	})
 }

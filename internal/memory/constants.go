@@ -4,7 +4,7 @@
 package memory
 
 import (
-	"claude-code-go/internal/types"
+	"claude-go/internal/types"
 )
 
 // Constants for memory file processing.

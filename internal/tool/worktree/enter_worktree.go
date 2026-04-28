@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"time"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // EnterWorktreeTool creates an isolated git worktree and switches the session into it.

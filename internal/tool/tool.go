@@ -5,9 +5,32 @@ import "context"
 type Input map[string]any
 
 type Result struct {
-	Content any            `json:"content"`
-	Meta    map[string]any `json:"meta,omitempty"`
-	Error   string         `json:"error,omitempty"`
+	Content      any            `json:"content"`
+	Meta         map[string]any `json:"meta,omitempty"`
+	Error        string         `json:"error,omitempty"`
+	SkillContent string         `json:"skill_content,omitempty"` // Inline skill expansion content
+}
+
+// PermissionResult represents the result of a permission check
+type PermissionResult struct {
+	Decision    PermissionDecision `json:"decision"`    // allow, deny, ask
+	Message     string             `json:"message"`     // Reason for the decision (shown to user)
+	Reason      string             `json:"reason"`      // Internal reason for logging
+	RuleMatched string             `json:"rule_matched"` // The rule that triggered this decision, if any
+}
+
+// PermissionDecision represents the permission decision
+type PermissionDecision string
+
+const (
+	PermissionAllow PermissionDecision = "allow"
+	PermissionDeny  PermissionDecision = "deny"
+	PermissionAsk   PermissionDecision = "ask"
+)
+
+// PermissionChecker is an interface for checking permissions before tool execution
+type PermissionChecker interface {
+	CheckPermissions(ctx context.Context, input Input) PermissionResult
 }
 
 type Definition interface {

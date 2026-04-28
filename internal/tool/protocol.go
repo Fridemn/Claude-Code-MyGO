@@ -3,17 +3,18 @@ package tool
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
-	"claude-code-go/internal/task"
-	"claude-code-go/internal/types"
+	"claude-go/internal/task"
+	"claude-go/internal/types"
 )
 
 // toolCallPattern matches XML-style tool calls. We capture everything between
 // the opening tag and closing tag, then parse it as JSON separately to handle
 // nested braces correctly.
-var toolCallPattern = regexp.MustCompile(`(?s)<tool_call\s+name="([^"]+)">\s*(.*?)\s*`)
+var toolCallPattern = regexp.MustCompile(`(?s)<tool_call\s+name="([^"]+)">\s*(.*?)\s*</tool_call>`)
 
 type CallSpec struct {
 	Name  string
@@ -69,8 +70,8 @@ func ParseNativeCalls(calls []types.ToolCall) ([]CallSpec, error) {
 	out := make([]CallSpec, 0, len(calls))
 	for _, call := range calls {
 		var input Input
-		if strings.TrimSpace(call.Arguments) != "" {
-			if err := json.Unmarshal([]byte(call.Arguments), &input); err != nil {
+		if len(call.Arguments) > 0 && strings.TrimSpace(string(call.Arguments)) != "" {
+			if err := json.Unmarshal(call.Arguments, &input); err != nil {
 				return nil, fmt.Errorf("decode tool input for %s: %w", call.Name, err)
 			}
 		}
@@ -81,7 +82,7 @@ func ParseNativeCalls(calls []types.ToolCall) ([]CallSpec, error) {
 			Name:  call.Name,
 			Input: input,
 			ID:    call.ID,
-			Raw:   call.Arguments,
+			Raw:   string(call.Arguments),
 		})
 	}
 	return out, nil
@@ -130,18 +131,20 @@ func DefinitionsToTypes(definitions []Definition) []types.ToolDefinition {
 		if definition == nil {
 			continue
 		}
+		schemaBytes, _ := json.Marshal(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": true,
+		})
 		out = append(out, types.ToolDefinition{
 			Name:        definition.Name(),
 			Description: definition.Description(),
-			Parameters: map[string]any{
-				"type":                 "object",
-				"properties":           map[string]any{},
-				"additionalProperties": true,
-			},
+			InputSchema: schemaBytes,
 		})
 		if provider, ok := definition.(SchemaProvider); ok {
 			if schema := provider.ParametersSchema(); len(schema) > 0 {
-				out[len(out)-1].Parameters = schema
+				schemaBytes, _ := json.Marshal(schema)
+				out[len(out)-1].InputSchema = schemaBytes
 			}
 		}
 	}
@@ -163,17 +166,59 @@ func SystemPromptFragment(definitions []Definition) string {
 		}
 		lines = append(lines, fmt.Sprintf("- %s [%s]: %s", definition.Name(), mode, definition.Description()))
 	}
+	replMode := isReplModeEnabledForPrompt()
 	lines = append(lines, "")
 	lines = append(lines, "Tool preferences for code tasks:")
-	lines = append(lines, "- File search: use Glob or list_files (NOT Bash ls/find)")
-	lines = append(lines, "- Content search: use Grep (NOT Bash grep/rg)")
-	lines = append(lines, "- Read files: use Read (NOT Bash cat/head/tail)")
+	if replMode {
+		lines = append(lines, "- REPL mode is enabled: use REPL for Read/Write/Edit/Glob/Grep/Bash/NotebookEdit/Agent primitive operations")
+	} else {
+		lines = append(lines, "- File search: use Glob or list_files (NOT Bash ls/find)")
+		lines = append(lines, "- Content search: use Grep (NOT Bash grep/rg)")
+		lines = append(lines, "- Read files: use Read (NOT Bash cat/head/tail)")
+	}
 	lines = append(lines, "- Current repository root should be referenced as '.'; sibling repositories usually live at '../name'")
 	lines = append(lines, "")
 	lines = append(lines, "If the API runtime exposes native tool calling, use that instead of emitting tool markup in plain text.")
 	lines = append(lines, "Only if native tool calling is unavailable, respond with one or more XML blocks in exactly this format:")
 	lines = append(lines, `<tool_call name="tool_name">{"key":"value"}`+"")
-	lines = append(lines, "Useful tools for code tasks include list_files, Read, Write, Edit, Grep, Glob, Bash, TaskList, TaskGet, Agent, SendMessage, and dynamic MCP tools prefixed with mcp__.")
+	if replMode {
+		lines = append(lines, "Useful tools for code tasks include REPL, list_files, TaskList, TaskGet, SendMessage, and dynamic MCP tools prefixed with mcp__.")
+	} else {
+		lines = append(lines, "Useful tools for code tasks include list_files, Read, Write, Edit, Grep, Glob, Bash, TaskList, TaskGet, Agent, SendMessage, and dynamic MCP tools prefixed with mcp__.")
+	}
 	lines = append(lines, "Use valid JSON inside each block. After tool results are returned, continue the task and provide the final answer without tool_call blocks.")
 	return strings.Join(lines, "\n")
+}
+
+func isReplModeEnabledForPrompt() bool {
+	if isEnvDefinedFalsy(strings.TrimSpace(os.Getenv("CLAUDE_CODE_REPL"))) {
+		return false
+	}
+	if isEnvTruthy(strings.TrimSpace(os.Getenv("CLAUDE_REPL_MODE"))) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("USER_TYPE")), "ant") &&
+		strings.EqualFold(strings.TrimSpace(os.Getenv("CLAUDE_CODE_ENTRYPOINT")), "cli")
+}
+
+func isEnvTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func isEnvDefinedFalsy(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+	switch strings.ToLower(trimmed) {
+	case "0", "false", "no", "off":
+		return true
+	default:
+		return false
+	}
 }

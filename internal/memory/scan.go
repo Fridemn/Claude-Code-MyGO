@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-code-go/internal/types"
+	"claude-go/internal/types"
 )
 
 // ScanMemoryFiles scans a memory directory for .md files and returns

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"claude-code-go/internal/config"
+	"claude-go/internal/config"
 )
 
 func TestConfigLoad_FromEnvFile(t *testing.T) {

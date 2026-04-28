@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"claude-code-go/internal/types"
-	"claude-code-go/internal/utils"
+	"claude-go/internal/types"
+	"claude-go/internal/utils"
 )
 
 // ClaudeMdLoader handles discovery and loading of CLAUDE.md memory files.

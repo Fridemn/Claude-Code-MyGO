@@ -3,9 +3,9 @@ package tool
 import (
 	"context"
 
-	"claude-code-go/internal/bootstrap"
-	"claude-code-go/internal/infra/mcp"
-	"claude-code-go/internal/task"
+	"claude-go/internal/bootstrap"
+	"claude-go/internal/infra/mcp"
+	"claude-go/internal/task"
 )
 
 // TaskStore is the interface for background agent tasks
@@ -14,7 +14,22 @@ type TaskStore interface {
 	Get(id string) (*task.AgentTask, bool)
 }
 
-// TaskListStore is the interface for the Todo V2 task list system
+// ShellTaskStore is the interface for background shell tasks
+// Ported from src/utils/ShellCommand.ts:ShellCommand
+type ShellTaskStore interface {
+	CreateTask(command, description string) (*task.ShellTaskState, error)
+	UpdateTaskStatus(taskID string, status task.ShellTaskStatus, exitCode int, interrupted bool) error
+	GetTask(taskID string) (*task.ShellTaskState, error)
+	ListTasks() []*task.ShellTaskState
+	WriteOutput(taskID string, data []byte) error
+	ReadOutput(taskID string, maxBytes int64) (string, error)
+	DeleteTask(taskID string) error
+	KillTask(ctx context.Context, taskID string, reason string) error
+	DrainNotices() []task.ShellTaskNotice
+}
+
+// TaskListStore is the interface for task list management
+// Used by TaskCreate/TaskGet/TaskList/TaskUpdate/TaskStop tools
 type TaskListStore interface {
 	Create(subject, description, activeForm string, metadata map[string]interface{}) (*task.Task, error)
 	Get(taskID string) (*task.Task, error)
@@ -49,6 +64,7 @@ type MCPRuntime interface {
 
 type Runtime struct {
 	Tasks         TaskStore
+	ShellTasks    ShellTaskStore // Background shell task management
 	TaskList      TaskListStore
 	Stop          func(taskID string) error
 	SpawnAgent    func(context.Context, AgentSpawnRequest) (*task.AgentTask, error)
@@ -56,6 +72,12 @@ type Runtime struct {
 	MCP           MCPRuntime
 	Store         *bootstrap.Store // Bootstrap store for CWD management and state
 	AgentId       string           // Agent ID for subagents, empty for main agent
+	// EmitProgress allows tools to stream structured progress events into the
+	// session transcript (for example REPL inner-step lifecycle messages).
+	EmitProgress func(map[string]any)
+	// AskPermission is called when a tool needs user permission
+	// Returns true if approved, false if denied
+	AskPermission func(ctx context.Context, toolName string, input Input, message string) (bool, error)
 }
 
 type AgentSpawnRequest struct {

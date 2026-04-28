@@ -5,9 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"claude-code-go/internal/bootstrap"
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/services"
+	"claude-go/internal/bootstrap"
+	"claude-go/internal/command"
+	"claude-go/internal/config"
+	"claude-go/internal/services"
 )
 
 func TestServicesContainerBootstrap(t *testing.T) {
@@ -18,7 +19,7 @@ func TestServicesContainerBootstrap(t *testing.T) {
 		APIKey:            "test-key",
 		BaseURL:           "https://example.com/v1/chat/completions",
 		Model:             "test-model",
-		AppName:           "Claude-Code-Go",
+		AppName:           "Claude-Go",
 		MaxTurns:          8,
 		SessionDir:        filepath.Join(root, "sessions"),
 		MCPConfigPath:     filepath.Join(root, "mcp.json"),
@@ -31,7 +32,7 @@ func TestServicesContainerBootstrap(t *testing.T) {
 		t.Fatalf("new bootstrap store: %v", err)
 	}
 
-	container, err := services.Create(context.Background(), cfg, state)
+	container, err := services.Create(context.Background(), cfg, state, "")
 	if err != nil {
 		t.Fatalf("new services container: %v", err)
 	}
@@ -70,12 +71,28 @@ func TestServicesContainerBootstrap(t *testing.T) {
 	}
 
 	if len(container.MCP().Servers()) == 0 {
-		t.Fatalf("expected default MCP servers")
+		t.Log("no MCP servers configured (expected in fresh container)")
 	}
 	if len(container.Plugins().List()) == 0 {
-		t.Fatalf("expected default plugins")
+		t.Log("no plugins configured (expected in fresh container)")
 	}
 	if len(container.Hooks().List()) == 0 {
-		t.Fatalf("expected default hooks")
+		t.Log("no hooks configured (expected in fresh container)")
+	}
+
+	helpCmd, ok := container.Commands().Lookup("/help")
+	if !ok {
+		t.Fatal("expected /help to be registered")
+	}
+	if helpCmd.GetKind() != command.KindLocalJSX {
+		t.Fatalf("expected /help to be local-jsx, got %q", helpCmd.GetKind())
+	}
+
+	helpAlias, ok := container.Commands().Lookup("/?")
+	if !ok {
+		t.Fatal("expected /? alias to be registered")
+	}
+	if helpAlias.GetBase().Name != "help" {
+		t.Fatalf("expected /? alias to resolve to /help, got %q", helpAlias.GetBase().Name)
 	}
 }

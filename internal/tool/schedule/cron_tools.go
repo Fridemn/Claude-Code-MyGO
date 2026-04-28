@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // Cron tool names

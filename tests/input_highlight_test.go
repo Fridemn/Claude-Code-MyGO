@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/ui/input"
+	"claude-go/internal/ui/input"
 )
 
 func TestRenderInputHighlightsCommandAndMention(t *testing.T) {

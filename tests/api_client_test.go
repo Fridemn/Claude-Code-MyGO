@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/api"
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/engine"
-	"claude-code-go/internal/types"
+	"claude-go/internal/api"
+	"claude-go/internal/config"
+	"claude-go/internal/engine"
+	"claude-go/internal/types"
 )
 
 func TestOpenAICompatibleClient_DecodeStandardChoices(t *testing.T) {

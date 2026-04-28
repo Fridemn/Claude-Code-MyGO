@@ -3,7 +3,7 @@ package state
 import (
 	"time"
 
-	"claude-code-go/internal/types"
+	"claude-go/internal/types"
 )
 
 type AppState struct {

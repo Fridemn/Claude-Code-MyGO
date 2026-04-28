@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"claude-code-go/internal/bootstrap"
+	"claude-go/internal/bootstrap"
 )
 
 const (

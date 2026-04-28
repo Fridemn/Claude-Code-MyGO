@@ -1,5 +1,7 @@
 package services
 
+import "strings"
+
 // Message grouping for compaction.
 // Ported from src/services/compact/grouping.ts
 
@@ -42,7 +44,7 @@ func GroupMessagesByApiRound(messages []CompactMessage) [][]CompactMessage {
 func FindLastCompactBoundaryIndex(messages []CompactMessage) int {
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
-		if msg.Type == MessageTypeSystem && stringsContains(msg.Content, "compact boundary") {
+		if msg.Type == MessageTypeSystem && strings.Contains(msg.Content, "compact boundary") {
 			return i
 		}
 		if msg.Type == MessageTypeUser && msg.IsCompactSummary {
@@ -64,22 +66,8 @@ func GetMessagesAfterCompactBoundary(messages []CompactMessage) []CompactMessage
 
 // IsCompactBoundaryMessage checks if a message is a compact boundary.
 func IsCompactBoundaryMessage(msg CompactMessage) bool {
-	if msg.Type == MessageTypeSystem && stringsContains(msg.Content, "compact boundary") {
+	if msg.Type == MessageTypeSystem && strings.Contains(msg.Content, "compact boundary") {
 		return true
 	}
 	return msg.Type == MessageTypeUser && msg.IsCompactSummary
-}
-
-// stringsContains is a helper to avoid importing strings for simple check
-func stringsContains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

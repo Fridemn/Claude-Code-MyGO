@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	"claude-code-go/internal/task"
-	"claude-code-go/internal/tool"
-	"claude-code-go/internal/tool/agent"
-	tasktool "claude-code-go/internal/tool/task"
+	"claude-go/internal/task"
+	"claude-go/internal/tool"
+	"claude-go/internal/tool/agent"
+	tasktool "claude-go/internal/tool/task"
 )
 
 // mockTaskListStore implements tool.TaskListStore for testing

@@ -1,9 +1,9 @@
 package tests
 
 import (
-	"claude-code-go/internal/tool/file"
+	"claude-go/internal/tool/file"
 
-	"claude-code-go/internal/tool/search"
+	"claude-go/internal/tool/search"
 
 	"context"
 	"os"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 func TestFileToolsListReadWriteEdit(t *testing.T) {

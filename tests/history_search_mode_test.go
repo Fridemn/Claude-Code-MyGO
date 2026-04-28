@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"claude-code-go/internal/ui"
-	"claude-code-go/internal/ui/messages"
+	"claude-go/internal/ui"
+	"claude-go/internal/ui/messages"
 )
 
 func TestModelCtrlRHistorySearchAcceptsMatch(t *testing.T) {

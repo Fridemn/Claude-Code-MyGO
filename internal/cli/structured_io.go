@@ -1,3 +1,5 @@
+//go:build !windows
+
 package cli
 
 import (
@@ -10,7 +12,6 @@ import (
 	"sync"
 	"syscall"
 	"unicode/utf8"
-	"unsafe"
 )
 
 type StructuredIO struct {
@@ -246,21 +247,4 @@ func renderedLineCount(screen string) int {
 		return 1
 	}
 	return strings.Count(screen, "\n") + 1
-}
-
-func getTermios(fd int) (*syscall.Termios, error) {
-	var termios syscall.Termios
-	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.TCGETS), uintptr(unsafe.Pointer(&termios)), 0, 0, 0)
-	if errno != 0 {
-		return nil, errno
-	}
-	return &termios, nil
-}
-
-func setTermios(fd int, termios *syscall.Termios) error {
-	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.TCSETS), uintptr(unsafe.Pointer(termios)), 0, 0, 0)
-	if errno != 0 {
-		return errno
-	}
-	return nil
 }

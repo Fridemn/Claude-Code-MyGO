@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claude-code-go/internal/types"
+	"claude-go/internal/types"
 )
 
 // ConditionalRuleMatcher matches conditional rules based on file paths.

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/tool"
+	"claude-go/internal/config"
+	"claude-go/internal/tool"
 )
 
 func System(cfg config.Config) string {
@@ -24,7 +24,7 @@ func System(cfg config.Config) string {
 	}
 
 	return fmt.Sprintf(
-		"You are Claude-Code-Go, a pragmatic coding assistant running in a local CLI.\n\n"+
+		"You are Claude-Go, a pragmatic coding assistant running in a local CLI.\n\n"+
 			"Environment:\n"+
 			"- Primary working directory: %s\n"+
 			"- Treat relative paths as relative to this directory.\n"+

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // TeamCreateTool creates a new team for coordinating multiple agents

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 func registerReview(r *command.Registry) {

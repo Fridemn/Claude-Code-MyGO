@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/disintegration/imaging"
+
 	_ "image/gif"  // Register GIF decoder
 	_ "image/jpeg" // Register JPEG decoder
 	_ "image/png"  // Register PNG decoder
@@ -254,22 +256,12 @@ func (ip *ImageProcessor) calculateNewDimensions(origWidth, origHeight int) (int
 	return newWidth, newHeight
 }
 
-// resizeImage resizes an image using simple nearest-neighbor interpolation
+// resizeImage resizes an image using Lanczos interpolation (high quality)
+// Ported from src/utils/imageResizer.ts - uses sharp's default kernel (lanczos3)
 func (ip *ImageProcessor) resizeImage(img image.Image, newWidth, newHeight int) image.Image {
-	// Create new RGBA image
-	dst := image.NewRGBA(image.Rect(0, 0, newWidth, newHeight))
-
-	// Simple nearest-neighbor scaling
-	for y := 0; y < newHeight; y++ {
-		for x := 0; x < newWidth; x++ {
-			// Map destination coordinates to source
-			srcX := (x * img.Bounds().Dx()) / newWidth
-			srcY := (y * img.Bounds().Dy()) / newHeight
-			dst.Set(x, y, img.At(srcX+img.Bounds().Min.X, srcY+img.Bounds().Min.Y))
-		}
-	}
-
-	return dst
+	// Use Lanczos interpolation for high-quality downsampling
+	// imaging.Lanczos uses a 3-lobed Lanczos filter, equivalent to lanczos3 in sharp
+	return imaging.Resize(img, newWidth, newHeight, imaging.Lanczos)
 }
 
 // encodeAsJPEG encodes an image as JPEG with the given quality

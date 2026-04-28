@@ -1,7 +1,7 @@
 package memory
 
 import (
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 // Register registers all memory commands with the registry

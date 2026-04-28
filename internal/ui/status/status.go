@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-code-go/internal/ui/components"
+	"claude-go/internal/ui/components"
 )
 
 // StatusLineConfig holds configuration for the status line

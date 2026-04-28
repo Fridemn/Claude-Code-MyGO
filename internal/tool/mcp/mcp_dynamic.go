@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 var nonWordPattern = regexp.MustCompile(`[^a-zA-Z0-9_]+`)

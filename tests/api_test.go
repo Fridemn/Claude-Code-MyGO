@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"claude-code-go/internal/api"
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/engine"
-	"claude-code-go/internal/types"
+	"claude-go/internal/api"
+	"claude-go/internal/config"
+	"claude-go/internal/engine"
+	"claude-go/internal/types"
 )
 
 func TestOpenAICompatibleClient_Complete(t *testing.T) {
@@ -82,6 +82,36 @@ func TestOpenAICompatibleClient_Complete(t *testing.T) {
 	// Verify response
 	if resp.Text != "Hello, world!" {
 		t.Errorf("Expected 'Hello, world!', got '%s'", resp.Text)
+	}
+}
+
+func TestBuildMessagesFromTypes_FiltersProgressAndTranscriptOnlyMessages(t *testing.T) {
+	t.Parallel()
+
+	converted := api.BuildMessagesFromTypes([]types.Message{
+		{
+			Role:    types.RoleUser,
+			Content: "visible",
+		},
+		{
+			Type:       types.MessageTypeProgress,
+			Role:       types.RoleSystem,
+			Content:    `{"type":"repl_tool_call","phase":"start","toolName":"REPL"}`,
+			ToolCallID: "repl-1",
+		},
+		{
+			Role:                      types.RoleSystem,
+			Type:                      types.SystemSubtypeLocalCommand,
+			Content:                   "<local-command-stdout>hidden</local-command-stdout>",
+			IsVisibleInTranscriptOnly: true,
+		},
+	})
+
+	if len(converted) != 1 {
+		t.Fatalf("expected only one API message, got %d", len(converted))
+	}
+	if converted[0].Role != types.RoleUser || converted[0].Content != "visible" {
+		t.Fatalf("unexpected converted message: %#v", converted[0])
 	}
 }
 

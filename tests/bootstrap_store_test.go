@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"claude-code-go/internal/bootstrap"
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/tool"
-	"claude-code-go/internal/tool/bash"
-	"claude-code-go/internal/tool/search"
+	"claude-go/internal/bootstrap"
+	"claude-go/internal/config"
+	"claude-go/internal/tool"
+	"claude-go/internal/tool/bash"
+	"claude-go/internal/tool/search"
 )
 
 func TestBootstrapStoreCWDManagement(t *testing.T) {

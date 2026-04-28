@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"claude-code-go/internal/command"
-	"claude-code-go/internal/tool"
+	"claude-go/internal/command"
+	"claude-go/internal/tool"
 )
 
 func registerRead(r *command.Registry) {

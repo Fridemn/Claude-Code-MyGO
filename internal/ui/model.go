@@ -8,11 +8,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"claude-code-go/internal/ui/components"
-	"claude-code-go/internal/ui/dialogs"
-	"claude-code-go/internal/ui/input"
-	"claude-code-go/internal/ui/messages"
-	"claude-code-go/internal/ui/status"
+	"claude-go/internal/ui/components"
+	"claude-go/internal/ui/dialogs"
+	"claude-go/internal/ui/input"
+	"claude-go/internal/ui/messages"
+	"claude-go/internal/ui/status"
 )
 
 // Model represents the main Bubble Tea model for the CLI
@@ -360,6 +360,13 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if handled, swallow := m.input.HandleVimKey(msg.String()); handled || swallow {
+			return m, nil
+		}
+		// Handle paste (bracketed paste mode)
+		if msg.Paste {
+			text := string(msg.Runes)
+			ref := m.input.HandlePaste(text)
+			m.input.Insert(ref)
 			return m, nil
 		}
 		// Insert character

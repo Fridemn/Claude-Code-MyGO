@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 // Tab indices

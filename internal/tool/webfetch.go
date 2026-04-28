@@ -69,6 +69,11 @@ func CreateWebFetchTool() *WebFetchTool {
 	}
 }
 
+// RegisterWebFetchTool registers the WebFetchTool with a tool registry
+func RegisterWebFetchTool(r *Registry) {
+	r.Register(CreateWebFetchTool())
+}
+
 func (WebFetchTool) Name() string { return "WebFetch" }
 func (WebFetchTool) Description() string {
 	return GetWebFetchDescription()
@@ -281,7 +286,7 @@ func (t *WebFetchTool) fetchWithPermittedRedirects(ctx context.Context, webURL s
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
 
-		req.Header.Set("User-Agent", "Claude-Code-Go/1.0")
+		req.Header.Set("User-Agent", "Claude-Go/1.0")
 		req.Header.Set("Accept", "text/markdown, text/html, */*")
 
 		resp, err := t.client.Do(req)

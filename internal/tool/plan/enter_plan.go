@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // EnterPlanModeTool requests permission to enter plan mode for complex tasks

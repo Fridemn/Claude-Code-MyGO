@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // TeamDeleteTool cleans up team and task directories when the swarm is complete

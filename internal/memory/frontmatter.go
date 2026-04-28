@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"claude-code-go/internal/types"
+	"claude-go/internal/types"
 )
 
 // Frontmatter represents parsed YAML frontmatter from a memory file.

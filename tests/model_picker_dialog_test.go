@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"claude-code-go/internal/ui"
-	"claude-code-go/internal/ui/dialogs"
+	"claude-go/internal/ui"
+	"claude-go/internal/ui/dialogs"
 )
 
 func TestModelPickerSelectsFocusedModel(t *testing.T) {

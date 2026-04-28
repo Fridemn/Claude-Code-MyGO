@@ -302,7 +302,7 @@ const API_LIMITS = {
 
 ## 文档维护
 
-- 文档位置: `Claude-Code-Go/temp/docs/`
+- 文档位置: `Claude-Go/temp/docs/`
 - 格式: Markdown
 - 更新: 随代码变更同步更新
 - 审核: PR 时检查文档准确性
@@ -314,7 +314,7 @@ const API_LIMITS = {
 ### 目录结构速查
 
 ```
-Claude-Code-Go/temp/
+Claude-Go/temp/
 ├── docs/                  # 文档目录
 │   ├── core-modules.md
 │   ├── commands-module.md

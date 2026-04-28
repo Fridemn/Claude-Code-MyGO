@@ -1,6 +1,6 @@
 package engine
 
-import "claude-code-go/internal/types"
+import "claude-go/internal/types"
 
 type Request struct {
 	Model    string

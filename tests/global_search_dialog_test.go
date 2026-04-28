@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/ui/dialogs"
+	"claude-go/internal/ui/dialogs"
 )
 
 func TestGlobalSearchStateQueryAndInsertMention(t *testing.T) {

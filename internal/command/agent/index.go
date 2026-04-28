@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 // Register registers all agent commands with the registry

@@ -1,7 +1,7 @@
 package session
 
 import (
-	"claude-code-go/internal/command"
+	"claude-go/internal/command"
 )
 
 // Register registers all session commands with the registry

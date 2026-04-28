@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"claude-code-go/internal/api"
+	"claude-go/internal/api"
 )
 
 func TestGetAPIProvider(t *testing.T) {

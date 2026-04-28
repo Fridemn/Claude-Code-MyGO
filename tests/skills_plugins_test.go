@@ -7,9 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/command"
-	cmdskills "claude-code-go/internal/command/skills"
-	"claude-code-go/internal/services"
+	"claude-go/internal/command"
+	cmdskills "claude-go/internal/command/skills"
+	"claude-go/internal/services"
+	"claude-go/internal/tool/skill"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestSkillsServiceLoadsProjectSkills(t *testing.T) {
@@ -41,7 +43,7 @@ Inspect the target, identify coupling, and propose a staged refactor plan.
 	if len(skills) < 3 {
 		t.Fatalf("expected bundled + project skills, got %d", len(skills))
 	}
-	var projectSkill services.Skill
+	var projectSkill skill.Skill
 	found := false
 	for _, skill := range skills {
 		if skill.Name == "refactor" {
@@ -479,6 +481,73 @@ func TestSkillsCommandRendersPanel(t *testing.T) {
 	}
 	if !strings.Contains(out.Value, "aliases=rf") || !strings.Contains(out.Value, "display_name=Refactor Module") {
 		t.Fatalf("expected skill metadata in /skills output: %s", out.Value)
+	}
+}
+
+func TestSkillsCommandLoadModel(t *testing.T) {
+	t.Parallel()
+
+	registry := command.EmptyRegistry()
+	cmdskills.Register(registry)
+
+	var doneResult string
+	var doneDisplay string
+	model, _, handled, err := registry.LoadModel(context.Background(), "/skills", command.Runtime{
+		SkillList: func() []command.SkillInfo {
+			return []command.SkillInfo{
+				{
+					Name:          "refactor",
+					DisplayName:   "Refactor Module",
+					Aliases:       []string{"rf"},
+					Description:   "Refactor a subsystem safely",
+					WhenToUse:     "large changes",
+					Source:        "projectSettings",
+					Path:          ".claude/skills/refactor/SKILL.md",
+					UserInvocable: true,
+				},
+				{
+					Name:          "demo-plugin:audit",
+					DisplayName:   "Audit Plugin",
+					Description:   "Audit plugin state",
+					Source:        "plugin",
+					UserInvocable: false,
+				},
+			}
+		},
+		SkillStatus: func() string {
+			return "skills=active\nregistered=2"
+		},
+		OnLocalJSXDone: func(result string, options command.LocalJSXDoneOptions) {
+			doneResult = result
+			doneDisplay = options.Display
+		},
+	})
+	if err != nil {
+		t.Fatalf("load model failed: %v", err)
+	}
+	if !handled || model == nil {
+		t.Fatalf("expected /skills load model handled, handled=%t model=%T", handled, model)
+	}
+	view := model.View()
+	if !strings.Contains(view, "Project skills") || !strings.Contains(view, "Plugin skills") {
+		t.Fatalf("unexpected /skills model view: %q", view)
+	}
+	if !strings.Contains(view, "Refactor Module") || !strings.Contains(view, "hidden=true") {
+		t.Fatalf("expected grouped skill metadata in view: %q", view)
+	}
+
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("expected esc to emit quit cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from skills model")
+	}
+	if doneResult != "Skills dialog dismissed" {
+		t.Fatalf("unexpected skills onDone result: %q", doneResult)
+	}
+	if doneDisplay != "system" {
+		t.Fatalf("expected system display for skills onDone, got %q", doneDisplay)
 	}
 }
 

@@ -8,6 +8,43 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type legacyLocalJSXTextModel struct {
+	body   string
+	onExit func()
+}
+
+func (m legacyLocalJSXTextModel) Init() tea.Cmd { return nil }
+
+func (m legacyLocalJSXTextModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.Type {
+		case tea.KeyEsc, tea.KeyCtrlC, tea.KeyEnter:
+			if m.onExit != nil {
+				m.onExit()
+			}
+			return m, tea.Quit
+		default:
+			switch strings.ToLower(strings.TrimSpace(msg.String())) {
+			case "q":
+				if m.onExit != nil {
+					m.onExit()
+				}
+				return m, tea.Quit
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m legacyLocalJSXTextModel) View() string {
+	body := strings.TrimSpace(m.body)
+	if body == "" {
+		return "No content."
+	}
+	return body
+}
+
 // Registry manages all commands
 type Registry struct {
 	mu       sync.RWMutex
@@ -139,11 +176,8 @@ func (r *Registry) Execute(ctx context.Context, input string, rt Runtime) (Comma
 		result, err := c.Execute(ctx, rt, parts[1:])
 		return result, true, err
 	case LocalJSXCommand:
-		// JSX commands should be handled via LoadModel
-		return CommandResult{
-			Type:  ResultTypeText,
-			Value: "command requires TUI rendering",
-		}, true, nil
+		result, err := c.Execute(ctx, rt, parts[1:])
+		return result, true, err
 	case PromptCommand:
 		// Prompt commands should be handled via GetPrompt
 		return CommandResult{
@@ -169,22 +203,36 @@ func (r *Registry) LoadModel(ctx context.Context, input string, rt Runtime) (tea
 	}
 
 	jsxCmd, ok := cmd.(LocalJSXCommand)
-	if !ok {
-		// Check if it's a LegacyCommand with JSX type
-		legacyCmd, isLegacy := cmd.(LegacyCommand)
-		if !isLegacy || legacyCmd.Type != KindLocalJSX {
-			return nil, nil, false, nil
+	args := parts[1:]
+	if ok {
+		model, err := jsxCmd.LoadModel(ctx, rt, args)
+		if err != nil {
+			return nil, nil, true, err
 		}
-		// LegacyCommand JSX doesn't have a LoadModel implementation yet
-		return nil, nil, false, nil
+		return model, cmd, true, nil
 	}
 
-	model, err := jsxCmd.LoadModel(ctx, rt, parts[1:])
-	if err != nil {
-		return nil, nil, true, err
+	// Legacy local-jsx commands are still text handlers in many migrated paths.
+	// Bridge them into an interactive tea.Model instead of falling back to panel text.
+	if legacyCmd, isLegacy := cmd.(LegacyCommand); isLegacy && legacyCmd.Type == KindLocalJSX {
+		if legacyCmd.Handler == nil {
+			return legacyLocalJSXTextModel{onExit: rt.OnExit}, cmd, true, nil
+		}
+		body, err := legacyCmd.Handler(ctx, rt, args)
+		if err != nil {
+			return nil, nil, true, err
+		}
+		return legacyLocalJSXTextModel{body: body, onExit: rt.OnExit}, cmd, true, nil
+	}
+	if localCmd, isLocal := cmd.(LocalCommand); isLocal && localCmd.GetKind() == KindLocalJSX {
+		result, err := localCmd.Execute(ctx, rt, args)
+		if err != nil {
+			return nil, nil, true, err
+		}
+		return legacyLocalJSXTextModel{body: result.Value, onExit: rt.OnExit}, cmd, true, nil
 	}
 
-	return model, cmd, true, nil
+	return nil, nil, false, nil
 }
 
 // GetPrompt returns the prompt for a prompt command
@@ -269,6 +317,7 @@ type LegacyCommand struct {
 	SupportsNonInteractive bool
 	Hidden                 bool
 	Handler                func(ctx context.Context, rt Runtime, args []string) (string, error)
+	Load                   func(ctx context.Context, rt Runtime, args []string) (tea.Model, error)
 }
 
 // GetBase returns the CommandBase for LegacyCommand
@@ -305,30 +354,28 @@ func (r *Registry) RegisterLegacy(cmd LegacyCommand) {
 		DisableModelInvocation: cmd.DisableModelInvocation,
 	}
 
-	switch cmd.Type {
-	case KindLocal, KindLocalJSX:
-		// Treat both as LocalCommand for now (LocalJSX needs TUI implementation)
-		localCmd := LocalCommand{
-			CommandBase:            base,
-			SupportsNonInteractive: cmd.SupportsNonInteractive,
-		}
-		if cmd.Handler != nil {
-			localCmd.Handler = func(ctx context.Context, rt Runtime, args []string) (CommandResult, error) {
-				result, err := cmd.Handler(ctx, rt, args)
-				if err != nil {
-					return CommandResult{}, err
-				}
-				return CommandResult{Type: ResultTypeText, Value: result}, nil
-			}
-		}
-		r.Register(localCmd)
-	default:
-		// Default to LocalCommand
-		localCmd := LocalCommand{
+	if cmd.Type == KindLocalJSX {
+		jsxCmd := LocalJSXCommand{
 			CommandBase: base,
 		}
+		if cmd.Load != nil {
+			jsxCmd.Load = cmd.Load
+		} else {
+			// Default bridge for legacy local-jsx handlers: render returned text
+			// as an interactive Bubble Tea sub-UI.
+			jsxCmd.Load = func(ctx context.Context, rt Runtime, args []string) (tea.Model, error) {
+				if cmd.Handler == nil {
+					return legacyLocalJSXTextModel{onExit: rt.OnExit}, nil
+				}
+				result, err := cmd.Handler(ctx, rt, args)
+				if err != nil {
+					return nil, err
+				}
+				return legacyLocalJSXTextModel{body: result, onExit: rt.OnExit}, nil
+			}
+		}
 		if cmd.Handler != nil {
-			localCmd.Handler = func(ctx context.Context, rt Runtime, args []string) (CommandResult, error) {
+			jsxCmd.ExecuteFallback = func(ctx context.Context, rt Runtime, args []string) (CommandResult, error) {
 				result, err := cmd.Handler(ctx, rt, args)
 				if err != nil {
 					return CommandResult{}, err
@@ -336,6 +383,26 @@ func (r *Registry) RegisterLegacy(cmd LegacyCommand) {
 				return CommandResult{Type: ResultTypeText, Value: result}, nil
 			}
 		}
-		r.Register(localCmd)
+		r.Register(jsxCmd)
+		return
 	}
+
+	localCmd := LocalCommand{
+		CommandBase:            base,
+		SupportsNonInteractive: cmd.SupportsNonInteractive,
+		KindOverride:           cmd.Type,
+	}
+	if localCmd.KindOverride == "" {
+		localCmd.KindOverride = KindLocal
+	}
+	if cmd.Handler != nil {
+		localCmd.Handler = func(ctx context.Context, rt Runtime, args []string) (CommandResult, error) {
+			result, err := cmd.Handler(ctx, rt, args)
+			if err != nil {
+				return CommandResult{}, err
+			}
+			return CommandResult{Type: ResultTypeText, Value: result}, nil
+		}
+	}
+	r.Register(localCmd)
 }

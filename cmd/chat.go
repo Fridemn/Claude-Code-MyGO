@@ -4,8 +4,8 @@ import (
 	"context"
 	"io"
 
-	"claude-code-go/internal/app"
-	"claude-code-go/internal/cli"
+	"claude-go/internal/app"
+	"claude-go/internal/cli"
 )
 
 func RunChat(ctx context.Context, application *app.App, stdout, stderr io.Writer) error {

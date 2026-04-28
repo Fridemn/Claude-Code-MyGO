@@ -49,6 +49,27 @@ func TestRenderMarkdownWithGlamourBasic(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownWithGlamourRemovesLiteralHashesFromNestedHeadings(t *testing.T) {
+	t.Parallel()
+
+	lines := renderMarkdownWithGlamour("## 二级标题\n\n### 3. 技术架构调整\n\n#### 四级标题", 80)
+	if len(lines) == 0 {
+		t.Fatalf("expected nested headings to render")
+	}
+
+	joined := ansiRE.ReplaceAllString(strings.Join(lines, "\n"), "")
+	for _, unexpected := range []string{"## 二级标题", "### 3. 技术架构调整", "#### 四级标题"} {
+		if strings.Contains(joined, unexpected) {
+			t.Fatalf("expected rendered heading to omit literal markdown markers %q, got %q", unexpected, joined)
+		}
+	}
+	for _, expected := range []string{"二级标题", "3. 技术架构调整", "四级标题"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected rendered heading text %q, got %q", expected, joined)
+		}
+	}
+}
+
 func TestShouldUseGlamourDetection(t *testing.T) {
 	t.Parallel()
 
@@ -60,5 +81,41 @@ func TestShouldUseGlamourDetection(t *testing.T) {
 	}
 	if shouldUseGlamour("plain sentence without markdown tokens") {
 		t.Fatalf("expected plain text to keep legacy renderer")
+	}
+}
+
+func TestRenderMarkdownWithGlamourTableHasCompactSpacing(t *testing.T) {
+	t.Parallel()
+
+	md := `### 表格
+
+| 功能 | 状态 | 备注 |
+| --- | --- | --- |
+| 基础格式 | ✅ | 已完成 |
+| 代码高亮 | ✅ | 已完成 |
+| 表格支持 | ✅ | 已完成 |`
+
+	lines := renderMarkdownWithGlamour(md, 120)
+	plain := strings.Trim(ansiRE.ReplaceAllString(strings.Join(lines, "\n"), ""), "\n")
+	if plain == "" {
+		t.Fatalf("expected non-empty table render")
+	}
+
+	maxBlankRun := 0
+	currentBlankRun := 0
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.TrimSpace(line) == "" {
+			currentBlankRun++
+			if currentBlankRun > maxBlankRun {
+				maxBlankRun = currentBlankRun
+			}
+			continue
+		}
+		currentBlankRun = 0
+	}
+
+	// Keep at most one blank separator line to avoid visually "stretched" rows.
+	if maxBlankRun > 1 {
+		t.Fatalf("expected compact markdown spacing, max blank run=%d, output:\n%s", maxBlankRun, plain)
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/ui/components"
+	"claude-go/internal/ui/components"
 )
 
 func TestListItem(t *testing.T) {

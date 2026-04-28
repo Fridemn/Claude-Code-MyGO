@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"claude-code-go/internal/command"
-	cmdintegration "claude-code-go/internal/command/integration"
+	"claude-go/internal/command"
+	cmdintegration "claude-go/internal/command/integration"
 )
 
 func TestCommandRegistry_MCPCommands(t *testing.T) {

@@ -313,7 +313,7 @@ func (s *LSPServerInstance) SendRequest(ctx context.Context, method string, para
 		if s.lastError != nil {
 			errMsg += fmt.Sprintf(", last error: %v", s.lastError)
 		}
-		return nil, fmt.Errorf(errMsg)
+		return nil, fmt.Errorf("%s", errMsg)
 	}
 
 	var lastAttemptError error

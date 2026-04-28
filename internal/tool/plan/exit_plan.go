@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // ExitPlanModeTool prompts the user to exit plan mode and start coding

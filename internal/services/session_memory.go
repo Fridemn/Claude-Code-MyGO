@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"claude-code-go/internal/types"
+	"claude-go/internal/types"
 )
 
 // SessionMemoryConfig contains configuration for session memory extraction.

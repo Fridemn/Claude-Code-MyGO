@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"claude-code-go/internal/api"
+	"claude-go/internal/api"
 )
 
 func TestStreamWatchdogConfig(t *testing.T) {

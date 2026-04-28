@@ -1,4 +1,39 @@
+# Temporary files
 temp/
+
+# Environment files
 .env
+.env.local
+.env.*.local
+
+# Cache directories
 .cache/
-.claude-code-go/
+.claude-go/
+.claude/settings.local.json
+.claude-go/settings.local.json
+
+# Build output
+build/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test output
+coverage.out
+coverage.html
+*.test
+*.prof
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

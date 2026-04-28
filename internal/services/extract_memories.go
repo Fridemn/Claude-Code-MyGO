@@ -7,12 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"claude-code-go/internal/types"
-	"claude-code-go/internal/utils"
+	"claude-go/internal/types"
+	"claude-go/internal/utils"
 )
 
 // ExtractMemoriesService extracts durable memories from the current session transcript
-// and writes them to the auto-memory directory (~/.claude/projects/<path>/memory/).
+// and writes them to the auto-memory directory (~/.claude-go/projects/<path>/memory/).
 type ExtractMemoriesService struct {
 	memoryDir string
 	enabled   bool
@@ -117,7 +117,7 @@ func (s *ExtractMemoriesService) hasMemoryWritesSince(messages []types.Message, 
 				toolName := tc.Name
 				if toolName == "Write" || toolName == "Edit" {
 					// Parse arguments to find file path
-					args := tc.Arguments
+					args := string(tc.Arguments)
 					if strings.Contains(args, s.memoryDir) {
 						return true
 					}

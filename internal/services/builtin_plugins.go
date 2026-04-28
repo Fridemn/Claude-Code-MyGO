@@ -21,7 +21,7 @@ func initBuiltinPlugins() {
 	}
 	registerBuiltinPlugin(BuiltinPluginDefinition{
 		Name:           "workspace-defaults",
-		Description:    "Built-in workspace helpers that ship with Claude-Code-Go.",
+		Description:    "Built-in workspace helpers that ship with Claude-Go.",
 		Version:        "0.1.0",
 		DefaultEnabled: true,
 		Skills: []BundledSkillDefinition{

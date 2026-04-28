@@ -44,13 +44,19 @@ type CommandBase struct {
 	DisableModelInvocation bool     `json:"disable_model_invocation,omitempty"`
 	Source                 string   `json:"source"` // "builtin", "plugin", "skills", "mcp", "bundled"
 	LoadedFrom             string   `json:"loaded_from"`
+	// Immediate allows the command to execute during streaming/agent execution
+	// without interrupting the main agent (like /btw)
+	Immediate              bool     `json:"immediate,omitempty"`
 }
 
 // LocalCommand is a simple command that returns text
 type LocalCommand struct {
 	CommandBase
 	SupportsNonInteractive bool `json:"supports_non_interactive"`
-	Handler                func(ctx context.Context, rt Runtime, args []string) (CommandResult, error)
+	// KindOverride preserves legacy command kinds (e.g. prompt/local-jsx)
+	// when adapting into LocalCommand handlers.
+	KindOverride Kind `json:"kind_override,omitempty"`
+	Handler      func(ctx context.Context, rt Runtime, args []string) (CommandResult, error)
 }
 
 // LocalJSXCommand is a TUI command that returns a Bubble Tea model
@@ -58,6 +64,9 @@ type LocalJSXCommand struct {
 	CommandBase
 	// Load returns a Bubble Tea model for interactive rendering
 	Load func(ctx context.Context, rt Runtime, args []string) (tea.Model, error)
+	// ExecuteFallback preserves non-interactive legacy output semantics.
+	// When nil, Execute() returns the generic "requires TUI rendering" marker.
+	ExecuteFallback func(ctx context.Context, rt Runtime, args []string) (CommandResult, error)
 }
 
 // PromptCommand expands to a prompt sent to the model
@@ -84,7 +93,12 @@ func (c LocalJSXCommand) GetBase() CommandBase { return c.CommandBase }
 func (c PromptCommand) GetBase() CommandBase   { return c.CommandBase }
 
 // GetKind returns the command kind
-func (c LocalCommand) GetKind() Kind    { return KindLocal }
+func (c LocalCommand) GetKind() Kind {
+	if c.KindOverride != "" {
+		return c.KindOverride
+	}
+	return KindLocal
+}
 func (c LocalJSXCommand) GetKind() Kind { return KindLocalJSX }
 func (c PromptCommand) GetKind() Kind   { return KindPrompt }
 
@@ -102,6 +116,17 @@ func (c LocalJSXCommand) LoadModel(ctx context.Context, rt Runtime, args []strin
 		return nil, nil
 	}
 	return c.Load(ctx, rt, args)
+}
+
+// Execute returns fallback text output for LocalJSX commands in non-interactive paths.
+func (c LocalJSXCommand) Execute(ctx context.Context, rt Runtime, args []string) (CommandResult, error) {
+	if c.ExecuteFallback != nil {
+		return c.ExecuteFallback(ctx, rt, args)
+	}
+	return CommandResult{
+		Type:  ResultTypeText,
+		Value: "command requires TUI rendering",
+	}, nil
 }
 
 // GetPrompt returns the prompt for a prompt command

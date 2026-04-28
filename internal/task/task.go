@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"claude-code-go/internal/types"
-	"claude-code-go/internal/utils"
+	"claude-go/internal/types"
+	"claude-go/internal/utils"
 )
 
 type Type string

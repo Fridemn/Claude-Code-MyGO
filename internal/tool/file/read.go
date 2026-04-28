@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // FileReadTool implements the Read tool from TypeScript
@@ -242,23 +242,6 @@ func (t FileReadTool) readImage(fullFilePath, filePath string) (tool.Result, err
 }
 
 func (t FileReadTool) readNotebook(fullFilePath, filePath string) (tool.Result, error) {
-	// Read notebook file
-	data, err := os.ReadFile(fullFilePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return tool.Result{}, fmt.Errorf("File does not exist: %s", filePath)
-		}
-		return tool.Result{}, err
-	}
-
-	// Return raw content for notebooks - parsing would be done by caller
-	result := FileReadResult{
-		Type: "notebook",
-		File: NotebookFileResult{
-			FilePath: filePath,
-			Cells:    []any{string(data)}, // Simplified representation
-		},
-	}
-
-	return tool.Result{Content: result}, nil
+	// Read and parse notebook file with proper cell processing
+	return readAndParseNotebook(fullFilePath, filePath, "")
 }

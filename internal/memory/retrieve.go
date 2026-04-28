@@ -3,7 +3,7 @@ package memory
 import (
 	"context"
 
-	"claude-code-go/internal/types"
+	"claude-go/internal/types"
 )
 
 // RelevantMemoriesConfig contains configuration for memory retrieval.

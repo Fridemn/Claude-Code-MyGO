@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"claude-code-go/internal/bootstrap"
-	"claude-code-go/internal/components"
-	"claude-code-go/internal/config"
-	"claude-code-go/internal/prompt"
-	"claude-code-go/internal/tool"
+	"claude-go/internal/bootstrap"
+	"claude-go/internal/components"
+	"claude-go/internal/config"
+	"claude-go/internal/prompt"
+	"claude-go/internal/tool"
 )
 
 func TestPromptSystemAndWithTools(t *testing.T) {
@@ -18,7 +18,7 @@ func TestPromptSystemAndWithTools(t *testing.T) {
 
 	cfg := config.Config{}
 	defaultPrompt := strings.TrimSpace(prompt.System(cfg))
-	if !strings.Contains(defaultPrompt, "Claude-Code-Go") {
+	if !strings.Contains(defaultPrompt, "Claude-Go") {
 		t.Fatalf("unexpected default prompt: %q", defaultPrompt)
 	}
 	if !strings.Contains(defaultPrompt, "Primary working directory:") {
@@ -86,7 +86,7 @@ func TestComponentsChatRenderAndPromptLabel(t *testing.T) {
 	rendered := app.Render(components.ChatProps{
 		Version: "test-version",
 		Config: config.Config{
-			AppName: "Claude-Code-Go",
+			AppName: "Claude-Go",
 			Model:   "test-model",
 			BaseURL: "https://example.com/v1/chat/completions",
 		},
@@ -101,7 +101,7 @@ func TestComponentsChatRenderAndPromptLabel(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Claude-Code-Go",
+		"Claude-Go",
 		"test-version",
 		"session-1",
 		"test-model",

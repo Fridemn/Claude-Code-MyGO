@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"claude-code-go/internal/tool"
+	"claude-go/internal/tool"
 )
 
 // SyntheticOutputToolName is the name of the synthetic output tool

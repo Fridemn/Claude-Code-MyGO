@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"claude-code-go/internal/services"
+	"claude-go/internal/services"
 )
 
 func TestPluginsService_PersistAndReload(t *testing.T) {
